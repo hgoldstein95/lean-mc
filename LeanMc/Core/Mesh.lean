@@ -94,15 +94,15 @@ def triangleCorners : List (Fin 4) := [0, 1, 2, 0, 2, 3]
 
 /-- Append the packed vertex for one corner of a face. -/
 def pushVertex (f : Face) (out : ByteArray) (i : Fin 4) : ByteArray :=
-  let (cx, cy, cz) := f.dir.corner i
-  let (cu, cv) := cornerUV i
+  let corner := f.dir.corner i
+  let uv := cornerUV i
   let tile := f.block.tile f.dir
   out
-    |>.push (f.pos.x.val + cx).toUInt8
-    |>.push (f.pos.y.val + cy).toUInt8
-    |>.push (f.pos.z.val + cz).toUInt8
-    |>.push (tile % 16 + cu).toUInt8
-    |>.push (tile / 16 + cv).toUInt8
+    |>.push (f.pos.x.val + corner.1).toUInt8
+    |>.push (f.pos.y.val + corner.2.1).toUInt8
+    |>.push (f.pos.z.val + corner.2.2).toUInt8
+    |>.push (tile % 16 + uv.1).toUInt8
+    |>.push (tile / 16 + uv.2).toUInt8
     |>.push f.dir.shade
     |>.push f.dir.toNat.toUInt8
     |>.push 0

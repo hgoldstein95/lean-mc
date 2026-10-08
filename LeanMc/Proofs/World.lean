@@ -67,7 +67,11 @@ theorem get_setMany_new (terrain : BlockPos → Block) (edits : List (BlockPos �
 /-- A materialised chunk holds exactly the world's blocks. -/
 theorem get_chunk (w : World) (c : ChunkPos) (l : LocalPos) :
     (w.chunk c).get l = w.get (c.blockAt l) := by
-  simp [chunk, Chunk.get_ofFn]
+  unfold chunk get
+  split
+  · next h => simp [Std.HashMap.getElem?_of_isEmpty h, w.terrainChunk_get]
+  · rw [Chunk.get_ofFn]
+    split <;> simp [w.terrainChunk_get]
 
 /-- Reading any block through its materialised chunk gives the world's block. -/
 theorem get_chunk_chunkPos (w : World) (p : BlockPos) :

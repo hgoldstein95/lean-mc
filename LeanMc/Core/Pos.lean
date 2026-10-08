@@ -47,6 +47,10 @@ def all : List Dir := [xp, xn, yp, yn, zp, zn]
 def toNat : Dir → Nat
   | xp => 0 | xn => 1 | yp => 2 | yn => 3 | zp => 4 | zn => 5
 
+/-- The opposite direction. -/
+def opp : Dir → Dir
+  | xp => xn | xn => xp | yp => yn | yn => yp | zp => zn | zn => zp
+
 end Dir
 
 namespace BlockPos

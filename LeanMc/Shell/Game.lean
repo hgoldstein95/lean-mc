@@ -1,7 +1,7 @@
 import LeanMc.FFI
 import LeanMc.Core.World
 import LeanMc.Core.Mesh
-import LeanMc.Core.Terrain
+import LeanMc.Core.Generated
 import LeanMc.Shell.Atlas
 
 /-!
@@ -20,7 +20,7 @@ open FFI
 
 /-- How far chunks are kept loaded around the camera, in chunks. -/
 def viewRadius : Int := 6
-def viewRadiusY : Int := 3
+def viewRadiusY : Int := 4
 
 /--
 A free-flying camera. Its position is a block plus an offset in `[0, 1)`, so
@@ -179,23 +179,25 @@ def draw (g : Game) : IO Unit := do
 end Game
 
 /--
-Edits made by the self-test, to exercise writes across a chunk boundary.
-Positions are given for the default start and shifted along with it.
+Edits made by the self-test, relative to a block on the ground: a pit, an arch,
+and a floating slab that spans a chunk boundary wherever it lands.
 -/
-def selftestEdits : List (BlockPos × Block) :=
-  -- a pit, showing the layers underneath
-  ([3, 4].flatMap fun x => [5, 6].flatMap fun z => [8, 7, 6, 5, 4].map fun y =>
-      ((⟨x, y, z⟩ : BlockPos), Block.air))
-  -- one block removed at the edge of a chunk, exposing its neighbour in the next chunk
-  ++ [(⟨15, 8, 6⟩, .air)]
-  -- an arch
-  ++ [9, 10, 11].flatMap (fun y => [((⟨10, y, 3⟩ : BlockPos), Block.planks), (⟨13, y, 3⟩, .planks)])
-  ++ [10, 11, 12, 13].map (fun x => ((⟨x, 12, 3⟩ : BlockPos), Block.leaves))
+def selftestEdits (o : BlockPos) : List (BlockPos × Block) :=
+  let rel (dx dy dz : Int) : BlockPos := ⟨o.x + dx, o.y + dy, o.z + dz⟩
+  ([-1, 0].flatMap fun dx => [-6, -5].flatMap fun dz => [0, -1, -2, -3, -4, -5].map fun dy =>
+      (rel dx dy dz, Block.air))
+  ++ [1, 2, 3].flatMap (fun dy => [(rel 3 dy (-9), Block.planks), (rel 6 dy (-9), .planks)])
+  ++ [3, 4, 5, 6].map (fun dx => (rel dx 4 (-9), Block.cobble))
+  ++ (List.range 18).map (fun (i : Nat) => (rel (Int.ofNat i - 9) 6 (-12), Block.planks))
 
 /-- Options taken from the command line. -/
 structure Options where
-  /-- Where the camera starts. -/
-  start : BlockPos := ⟨7, 12, 14⟩
+  /-- Seed of the generated world. -/
+  seed : UInt64 := 2026
+  /-- Generate the flat test world instead of terrain. -/
+  flat : Bool := false
+  /-- Where the camera starts; by default, just above the ground near the origin. -/
+  start : Option BlockPos := none
   /-- Render a scripted scene, save a screenshot here and exit. -/
   selftest : Option String := none
   /-- Like `selftest`, but fly across the world first to exercise streaming. -/
@@ -207,8 +209,13 @@ def Options.parse (opts : Options := {}) : List String → Except String Options
   | "--flytest" :: path :: rest => parse { opts with flytest := some path } rest
   | "--at" :: x :: y :: z :: rest =>
     match x.toInt?, y.toInt?, z.toInt? with
-    | some x, some y, some z => parse { opts with start := ⟨x, y, z⟩ } rest
+    | some x, some y, some z => parse { opts with start := some ⟨x, y, z⟩ } rest
     | _, _, _ => throw "--at expects three integers"
+  | "--seed" :: n :: rest =>
+    match n.toNat? with
+    | some n => parse { opts with seed := n.toUInt64 } rest
+    | none => throw "--seed expects a number"
+  | "--flat" :: rest => parse { opts with flat := true } rest
   | arg :: _ => throw s!"unknown argument: {arg}"
 
 def flytestFrames : Nat := 240
@@ -220,8 +227,12 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
     g := { g with camera := g.camera.move 1.5 0 (-0.5) }
   g ← g.stream (if opts.selftest.isSome then 100000 else 6)
   if opts.selftest.isSome && g.frame == 2 then
-    for (p, b) in selftestEdits do
-      g ← g.setBlock (⟨opts.start.x - 7 + p.x, p.y, opts.start.z - 14 + p.z⟩) b
+    let cam := g.camera.base
+    let mut ground : BlockPos := cam
+    while !(g.world.get ground).isSolid && ground.y > 0 do
+      ground := ground.step .yn
+    for (p, b) in selftestEdits ground do
+      g ← g.setBlock p b
   if g.frame % 60 == 59 then
     g ← g.unloadFar
   g.draw
@@ -242,12 +253,16 @@ def run (args : List String) : IO UInt32 := do
     | .ok opts => pure opts
     | .error message =>
       IO.eprintln message
-      IO.eprintln "usage: leanmc [--at X Y Z] [--selftest PNG | --flytest PNG]"
+      IO.eprintln "usage: leanmc [--seed N] [--flat] [--at X Y Z] [--selftest PNG | --flytest PNG]"
       return 2
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
-  let camera : Camera := { base := opts.start, pitch := -0.35, yaw := 0.15 }
-  loop { world := World.new Terrain.flat, camera } opts
+  let world := if opts.flat then World.new Terrain.flat else Terrain.world opts.seed
+  let start := opts.start.getD <|
+    if opts.flat then ⟨7, Terrain.flatSurface + 4, 14⟩
+    else ⟨8, Terrain.height opts.seed 8 8 + 6, 8⟩
+  let camera : Camera := { base := start, pitch := -0.35, yaw := 0.15 }
+  loop { world, camera } opts
   closeWindow
   return 0
 

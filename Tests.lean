@@ -1,6 +1,6 @@
 import LeanMc.Core.World
 import LeanMc.Core.Mesh
-import LeanMc.Core.Terrain
+import LeanMc.Core.Generated
 
 /-!
 Executable checks on the pure core, run with `lake test`. They complement the
@@ -71,5 +71,44 @@ def main : IO UInt32 := do
     [(-33 : Int), -17, -16, -1, 0, 1, 15, 16, 1000000000000000000000].all fun n =>
       let p : BlockPos := ⟨n, -n, n + 7⟩
       p.chunkPos.blockAt p.localPos == p) && ok
+
+  -- Generated terrain
+  let seed : UInt64 := 2026
+  let far : Int := 1000000000000000000000
+  let sampleChunks : List ChunkPos :=
+    [⟨0, 3, 0⟩, ⟨-1, 2, 5⟩, ⟨7, 4, -3⟩, ⟨0, 0, 0⟩, ⟨0, 9, 0⟩, ⟨far, 3, -far⟩, ⟨-far - 1, 2, far⟩]
+  ok := (← check "the chunk generator matches the pointwise terrain, near and far" <|
+    sampleChunks.all fun c => LocalPos.all.all fun l =>
+      (Terrain.generateChunk seed c).get l == Terrain.generate seed (c.blockAt l)) && ok
+
+  let columns : List (Int × Int) :=
+    (range (-40) 40).flatMap fun i => [(i * 37, i * 91 - 5), (far + i, i - far), (-far * far + i, i)]
+  ok := (← check "ground height stays within its bounds, near and far" <|
+    columns.all fun (x, z) =>
+      let h := Terrain.height seed x z
+      Terrain.minHeight ≤ h && h ≤ Terrain.maxHeight) && ok
+
+  let heights := columns.map fun (x, z) => Terrain.height seed x z
+  ok := (← check "the land is not flat" <|
+    heights.any (· != heights.head!) && heights.any (· ≥ Terrain.sandLevel)
+      && heights.any (· < Terrain.sandLevel)) && ok
+
+  ok := (← check "different seeds give different land" <|
+    columns.any fun (x, z) => Terrain.height seed x z != Terrain.height (seed + 1) x z) && ok
+
+  -- The chunk holding the surface at the origin, so that it has faces to check.
+  let gw := Terrain.world seed
+  let surface : ChunkPos := ⟨0, Terrain.height seed 8 8 / 16, 0⟩
+  let mut gcache : ChunkCache := {}
+  for c in [surface, surface.step .xp, surface.step .yn] do
+    gcache := gcache.load gw c
+  let faces := chunkFaces gw.get surface
+  IO.println s!"      (surface chunk {surface.x} {surface.y} {surface.z} has {faces.length} faces)"
+  ok := (← check "the surface chunk has faces" (faces.length > 0)) && ok
+
+  ok := (← check "generated terrain meshes the same through the cache as from the world" <|
+    meshChunk (gcache.blockAt gw) surface == meshChunk gw.get surface) && ok
+
+  ok := (← check "no face is emitted twice" (faces.eraseDups.length == faces.length)) && ok
 
   return if ok then 0 else 1

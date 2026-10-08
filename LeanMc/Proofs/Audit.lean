@@ -2,6 +2,9 @@ import Lean
 import LeanMc.Proofs.Pos
 import LeanMc.Proofs.Chunk
 import LeanMc.Proofs.World
+import LeanMc.Proofs.Terrain
+import LeanMc.Proofs.Mesh
+import LeanMc.Proofs.Generated
 
 /-!
 # Axiom audit
@@ -55,3 +58,32 @@ open LeanMc
   ChunkCache.Valid.unload
   ChunkCache.Valid.setBlock
   ChunkCache.Valid.blockAt_load_unload
+
+-- Terrain
+#assert_standard_axioms
+  Terrain.height_bounds
+  Terrain.generateChunk_get
+  Terrain.generate_bedrock
+  Terrain.generate_below
+  Terrain.generate_above
+  Terrain.generate_isSolid_of_le_height
+  Terrain.generate_surface_isSolid
+
+-- Meshing
+#assert_standard_axioms
+  mem_chunkFaces
+  face_mem_chunkFaces
+  nodup_chunkFaces
+  chunkFaces_congr
+  meshChunk_cache
+  chunkFaces_set
+  meshChunk_set
+  toList_packFaces
+  size_meshChunk
+  Face.toNat_vertex
+
+-- The generated world
+#assert_standard_axioms
+  Terrain.world_chunk_get
+  Terrain.world_setMany_get
+  Terrain.mem_chunkFaces_cache

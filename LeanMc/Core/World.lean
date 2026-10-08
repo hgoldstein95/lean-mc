@@ -1,5 +1,5 @@
 import Std.Data.HashMap
-import LeanMc.Core.Chunk
+import LeanMc.Proofs.Chunk
 
 /-!
 # The world
@@ -18,14 +18,27 @@ namespace LeanMc
 structure World where
   /-- What the world contains before anyone changes it. -/
   terrain : BlockPos → Block
+  /-- A way to produce a whole chunk of terrain at once, typically faster than block by block. -/
+  terrainChunk : ChunkPos → Chunk
+  /-- The chunk generator produces exactly the terrain. -/
+  terrainChunk_get : ∀ c l, (terrainChunk c).get l = terrain (c.blockAt l)
   /-- Blocks that have been changed, by position. -/
   edits : Std.HashMap BlockPos Block := {}
 
 namespace World
 
-/-- A world nobody has changed yet. -/
-def new (terrain : BlockPos → Block) : World :=
-  { terrain }
+/-- A world nobody has changed yet, generating its chunks block by block. -/
+def new (terrain : BlockPos → Block) : World where
+  terrain
+  terrainChunk c := Chunk.ofFn fun l => terrain (c.blockAt l)
+  terrainChunk_get _ _ := Chunk.get_ofFn ..
+
+/-- A world nobody has changed yet, with a chunk generator proved to match its terrain. -/
+def newWithChunks (terrain : BlockPos → Block) (terrainChunk : ChunkPos → Chunk)
+    (h : ∀ c l, (terrainChunk c).get l = terrain (c.blockAt l)) : World where
+  terrain
+  terrainChunk
+  terrainChunk_get := h
 
 def get (w : World) (p : BlockPos) : Block :=
   match w.edits[p]? with
@@ -39,9 +52,14 @@ def set (w : World) (p : BlockPos) (b : Block) : World :=
 def setMany (w : World) (edits : List (BlockPos × Block)) : World :=
   edits.foldl (fun w e => w.set e.1 e.2) w
 
-/-- The blocks of chunk `c`, materialised. -/
+/-- The blocks of chunk `c`, materialised: its terrain with the edits laid over it. -/
 def chunk (w : World) (c : ChunkPos) : Chunk :=
-  Chunk.ofFn fun l => w.get (c.blockAt l)
+  let base := w.terrainChunk c
+  if w.edits.isEmpty then base
+  else Chunk.ofFn fun l =>
+    match w.edits[c.blockAt l]? with
+    | some b => b
+    | none => base.get l
 
 end World
 
