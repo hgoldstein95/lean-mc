@@ -2,7 +2,8 @@ import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
 import LeanMc.Proofs.Player
-import LeanMc.Core.Session
+import LeanMc.Core.Start
+import LeanMc.Core.View
 
 /-!
 Executable checks on the pure core, run with `lake test`. They complement the
@@ -241,7 +242,16 @@ def main : IO UInt32 := do
 
   -- Pacing: frames a quarter of a tick long, so three in four run no tick.
   let quiet : Frame := { look := down, elapsed := 250 }
-  let fresh : Session := { state := standing }
+  let some fresh := Session.start? Terrain.flatWorld Terrain.flatWorld_floor dropped
+    | IO.println "FAIL  a session starts for a player standing on the ground"
+      return 1
+  ok := (← check "no session starts for a player inside the ground or below the floor" <|
+    (Session.start? Terrain.flatWorld Terrain.flatWorld_floor
+        { pos := ⟨block 4 + 32768, block 5, block 4 + 32768⟩ }).isNone
+      && (Session.start? Terrain.flatWorld Terrain.flatWorld_floor
+        { pos := ⟨block 4 + 32768, -block 3, block 4 + 32768⟩ }).isNone
+      && (fresh.edit? ⟨4, 0, 4⟩ .air).isNone && (fresh.edit? ⟨4, 9, 4⟩ .stone).isNone
+      && (fresh.edit? ⟨6, 9, 4⟩ .stone).isSome) && ok
   let digs (cmds : List Command) : Nat := cmds.countP (·.dig)
   let between := fresh.play [quiet, { quiet with dig := true }, quiet, quiet, quiet, quiet]
   ok := (← check "a dig pressed on a frame with no tick is run by the next tick, once" <|

@@ -189,6 +189,90 @@ theorem step_onGround (solid : BlockPos → Bool) (input : Input) (p : Player) :
       Free solid ((step solid input p).pos.add .y (-1)) :=
   blocked_eq_false_iff
 
+/-! ## Progress: movement that should happen does happen -/
+
+theorem add_add (v : Vec3) (axis : Axis) (a b : Int) :
+    (v.add axis a).add axis b = v.add axis (a + b) := by
+  cases axis <;> ext <;> simp [Vec3.add] <;> omega
+
+theorem add_zero (v : Vec3) (axis : Axis) : v.add axis 0 = v := by
+  cases axis <;> ext <;> simp [Vec3.add]
+
+/--
+**An unobstructed move goes the whole way.** If every position between the
+start and the intended end is free, `moveAxis` ends exactly at the intended
+end and does not report a collision.
+-/
+theorem moveAxis_of_free {solid : BlockPos → Bool} {axis : Axis} (fuel : Nat) {pos : Vec3}
+    {d : Int} (hfuel : d.natAbs ≤ 32768 * fuel)
+    (hfree : ∀ t, (0 ≤ t ∧ t ≤ d) ∨ (d ≤ t ∧ t ≤ 0) → Free solid (pos.add axis t)) :
+    moveAxis solid axis fuel pos d = (pos.add axis d, false) := by
+  induction fuel generalizing pos d with
+  | zero =>
+    have hd : d = 0 := by omega
+    subst hd
+    simp [moveAxis, add_zero]
+  | succ fuel ih =>
+    by_cases hd : d = 0
+    · subst hd
+      simp [moveAxis, add_zero]
+    · have hs : (0 ≤ clamp (-maxStep) maxStep d ∧ clamp (-maxStep) maxStep d ≤ d)
+          ∨ (d ≤ clamp (-maxStep) maxStep d ∧ clamp (-maxStep) maxStep d ≤ 0) := by
+        simp only [clamp, maxStep]
+        omega
+      have hb : blocked solid (pos.add axis (clamp (-maxStep) maxStep d)) = false :=
+        blocked_eq_false_iff.mpr (hfree _ hs)
+      have hrest := ih (pos := pos.add axis (clamp (-maxStep) maxStep d))
+        (d := d - clamp (-maxStep) maxStep d)
+        (by simp only [clamp, maxStep] at hs ⊢; omega)
+        (by
+          intro t ht
+          rw [add_add]
+          apply hfree
+          simp only [clamp, maxStep] at hs ht ⊢
+          omega)
+      simp only [moveAxis, hd, ↓reduceIte, hb, Bool.false_eq_true, hrest, add_add]
+      congr 2
+      omega
+
+/--
+**Standing still is still.** A player at rest on something solid, asking for
+nothing, is in exactly the same place after a tick, with no drift or jitter.
+-/
+theorem step_rest {solid : BlockPos → Bool} {p : Player} (hfree : Free solid p.pos)
+    (hground : blocked solid (p.pos.add .y (-1)) = true) (hvel : p.vel = ⟨0, 0, 0⟩)
+    (hfly : p.flying = false) :
+    (step solid {} p).pos = p.pos ∧ (step solid {} p).vel = ⟨0, 0, 0⟩ := by
+  -- What is underfoot touches the player's feet exactly.
+  obtain ⟨q, hq, hsolid⟩ := Box.collides_eq_true_iff.mp hground
+  have hnot : ¬ (box p.pos).Overlaps q := fun h => by
+    rw [hfree q h] at hsolid
+    cases hsolid
+  have hfeet : p.pos.y = (q.y + 1) * 65536 := by
+    simp only [Box.Overlaps, box, Vec3.add, halfWidth, height] at hq hnot
+    omega
+  -- So falling is blocked at once, and the gap to close is zero.
+  have hintent : intent {} p = ⟨0, -583, 0⟩ := by
+    have h0 : clamp (-maxSpeed) maxSpeed 0 = 0 := by decide
+    have ha : ∀ r, approach 0 0 r = 0 := fun r => by simp [approach]
+    have hg : max (-maxSpeed) (0 - gravity) = -583 := by decide
+    simp only [intent, hvel, hfly, h0, ha, hg, Bool.false_bne,
+      Bool.false_and, Bool.false_eq_true, ↓reduceIte]
+  have hfall : blocked solid (p.pos.add .y (-583)) = true := by
+    refine Box.collides_eq_true_iff.mpr ⟨q, ?_, hsolid⟩
+    simp only [Box.Overlaps, box, Vec3.add, halfWidth, height] at hq ⊢
+    omega
+  have hcontact : contactStep p.pos .y (-583) = 0 := by
+    simp only [contactStep, box, Vec3.get, hfeet]
+    omega
+  have hy : moveAxis solid .y moveFuel p.pos (-583) = (p.pos, true) := by
+    have hclamp : clamp (-maxStep) maxStep (-583) = -583 := by decide
+    have hstay : blocked solid p.pos = false := blocked_eq_false_iff.mpr hfree
+    simp [moveAxis, moveFuel, hclamp, hfall, hcontact, add_zero, hstay]
+  have hx : ∀ axis, moveAxis solid axis moveFuel p.pos 0 = (p.pos, false) := fun axis => by
+    simp [moveAxis, moveFuel]
+  simp [step, hintent, hy, hx]
+
 /-! ## The floor -/
 
 theorem SafeStep.above_floor {solid : BlockPos → Bool} {a b : Vec3}

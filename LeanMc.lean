@@ -10,6 +10,8 @@ import LeanMc.Core.Player
 import LeanMc.Core.Ray
 import LeanMc.Core.Game
 import LeanMc.Core.Session
+import LeanMc.Core.Start
+import LeanMc.Core.View
 import LeanMc.Core.Generated
 import LeanMc.Shell.Atlas
 import LeanMc.Shell.Game
@@ -22,5 +24,6 @@ import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
+import LeanMc.Proofs.View
 import LeanMc.Proofs.Generated
 import LeanMc.Proofs.Audit

@@ -8,6 +8,8 @@ import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
+import LeanMc.Proofs.View
+import LeanMc.Core.Start
 import LeanMc.Proofs.Generated
 
 /-!
@@ -144,3 +146,21 @@ open LeanMc
   Session.frame_flyIntent
   Session.play_sound
   Terrain.session_sound
+  Terrain.flatWorld_floor
+  Terrain.world_floor_get
+
+-- The view: what to load, drop and rebuild
+#assert_standard_axioms
+  ViewRange.contains_iff_offset
+  ViewRange.not_isFar_of_contains
+  mem_dirtyChunks
+  meshChunk_set_of_not_dirty
+
+-- Progress: things that should happen do
+#assert_standard_axioms
+  Player.moveAxis_of_free
+  Player.step_rest
+  State.edit_dig
+  State.edit_place
+  State.step_dig
+  State.step_place

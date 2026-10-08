@@ -74,6 +74,24 @@ theorem edit_near {s : State} {cmd : Command} {p : BlockPos} {b : Block}
           cases f <;> simp only [BlockPos.step] <;> omega
       · cases h
 
+/-! ## Progress: edits that should happen do happen -/
+
+/-- **Digging works.** Digging at a targeted block that is not bedrock always asks to remove it. -/
+theorem edit_dig {s : State} {cmd : Command} {hit : RayHit} (ht : s.target cmd.look = some hit)
+    (hd : cmd.dig = true) (hb : s.world.get hit.block ≠ .bedrock) :
+    s.edit cmd = some (hit.block, .air) := by
+  simp [edit, ht, hd, hb]
+
+/--
+**Placing works.** Placing against a targeted face always asks to fill the cell
+in front of it, unless the player is standing in that cell.
+-/
+theorem edit_place {s : State} {cmd : Command} {hit : RayHit} {f : Dir} {b : Block}
+    (ht : s.target cmd.look = some hit) (hd : cmd.dig = false) (hp : cmd.place = some b)
+    (hf : hit.face = some f) (ho : ¬ (Player.box s.player.pos).Overlaps (hit.block.step f)) :
+    s.edit cmd = some (hit.block.step f, b) := by
+  simp [edit, ht, hd, hp, hf, ho]
+
 /-! ## What a tick does to the world -/
 
 theorem step_world (s : State) (cmd : Command) :
@@ -90,6 +108,25 @@ theorem step_get_of_ne {s : State} {cmd : Command} {p q : BlockPos} {b : Block}
     (h : s.edit cmd = some (p, b)) (hq : q ≠ p) : (s.step cmd).world.get q = s.world.get q := by
   rw [step_world, h]
   exact World.get_set_of_ne _ _ hq
+
+/-- After a tick, the edited cell holds what the edit asked for. -/
+theorem step_get_of_edit {s : State} {cmd : Command} {p : BlockPos} {b : Block}
+    (h : s.edit cmd = some (p, b)) : (s.step cmd).world.get p = b := by
+  rw [step_world, h]
+  exact World.get_set_self ..
+
+/-- After digging a targeted block that is not bedrock, the block is gone. -/
+theorem step_dig {s : State} {cmd : Command} {hit : RayHit} (ht : s.target cmd.look = some hit)
+    (hd : cmd.dig = true) (hb : s.world.get hit.block ≠ .bedrock) :
+    (s.step cmd).world.get hit.block = .air :=
+  step_get_of_edit (edit_dig ht hd hb)
+
+/-- After placing against a targeted face the player is clear of, the block is there. -/
+theorem step_place {s : State} {cmd : Command} {hit : RayHit} {f : Dir} {b : Block}
+    (ht : s.target cmd.look = some hit) (hd : cmd.dig = false) (hp : cmd.place = some b)
+    (hf : hit.face = some f) (ho : ¬ (Player.box s.player.pos).Overlaps (hit.block.step f)) :
+    (s.step cmd).world.get (hit.block.step f) = b :=
+  step_get_of_edit (edit_place ht hd hp hf ho)
 
 /-- **One edit per tick.** There is a single cell outside which a tick changes nothing. -/
 theorem step_changes_at_most_one (s : State) (cmd : Command) :

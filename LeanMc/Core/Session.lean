@@ -1,4 +1,5 @@
 import LeanMc.Core.Game
+import LeanMc.Proofs.Game
 
 /-!
 # Frames and ticks
@@ -58,9 +59,16 @@ def add (p : Pending) (f : Frame) : Pending where
 
 end Pending
 
-/-- The game together with the bookkeeping that paces it. -/
+/--
+The game together with the bookkeeping that paces it.
+
+A session carries a proof that its state is sound, so one cannot be built or
+advanced without that proof: starting the game somewhere bad, or editing the
+world behind the rules' back, does not type-check.
+-/
 structure Session where
   state : State
+  sound : state.Sound
   pending : Pending := {}
   /-- Time that has passed but has not yet been simulated; always less than a tick. -/
   debt : Nat := 0
@@ -87,6 +95,16 @@ def logStep (log : RunLog) (cmd : Command) : RunLog where
 /-- `State.run`, also reporting the block changes made along the way. -/
 def runLog (s : State) (cmds : List Command) : RunLog :=
   cmds.foldl logStep { state := s }
+
+theorem foldl_logStep_state (cmds : List Command) (log : RunLog) :
+    (cmds.foldl logStep log).state = cmds.foldl step log.state := by
+  induction cmds generalizing log with
+  | nil => rfl
+  | cons c cs ih => exact ih _
+
+/-- Logging a run does not change where it ends up. -/
+theorem runLog_state (s : State) (cmds : List Command) : (s.runLog cmds).state = s.run cmds :=
+  foldl_logStep_state ..
 
 end State
 
@@ -129,13 +147,17 @@ def debtAfter (s : Session) (f : Frame) : Nat :=
 /-- Advance the session by one frame. -/
 def frame (s : Session) (f : Frame) : Session where
   state := s.state.run (s.commands f)
+  sound := s.sound.run _
   pending := s.pendingAfter f
   debt := s.debtAfter f
 
 /-- `frame`, also reporting what the shell must mirror: block changes and the last move. -/
 def frameLog (s : Session) (f : Frame) : Session × RunLog :=
   let log := s.state.runLog (s.commands f)
-  ({ state := log.state, pending := s.pendingAfter f, debt := s.debtAfter f }, log)
+  ({ state := log.state
+     sound := State.runLog_state s.state _ ▸ s.sound.run _
+     pending := s.pendingAfter f
+     debt := s.debtAfter f }, log)
 
 /-- Advance through a sequence of frames, collecting every command that was run. -/
 def play (s : Session) : List Frame → Session × List Command

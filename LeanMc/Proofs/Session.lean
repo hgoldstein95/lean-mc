@@ -33,16 +33,6 @@ namespace State
 theorem run_append (s : State) (a b : List Command) : s.run (a ++ b) = (s.run a).run b :=
   List.foldl_append ..
 
-theorem foldl_logStep_state (cmds : List Command) (log : RunLog) :
-    (cmds.foldl logStep log).state = cmds.foldl step log.state := by
-  induction cmds generalizing log with
-  | nil => rfl
-  | cons c cs ih => exact ih _
-
-/-- Logging a run does not change where it ends up. -/
-theorem runLog_state (s : State) (cmds : List Command) : (s.runLog cmds).state = s.run cmds :=
-  foldl_logStep_state ..
-
 theorem step_flying (s : State) (cmd : Command) :
     (s.step cmd).player.flying = (s.player.flying != cmd.move.toggleFly) := rfl
 
@@ -52,7 +42,9 @@ namespace Session
 
 /-- The shell's logging variant of `frame` computes the same session. -/
 theorem frameLog_fst (s : Session) (f : Frame) : (s.frameLog f).1 = s.frame f := by
-  simp [frameLog, frame, State.runLog_state]
+  have h := State.runLog_state s.state (s.commands f)
+  simp only [frameLog, frame]
+  congr 1
 
 /-! ## How many ticks, and with what commands -/
 
@@ -317,14 +309,13 @@ theorem frame_flyIntent (s : Session) (f : Frame) :
 
 /-! ## Soundness -/
 
-/-- **Pacing cannot break the game**: a sound state stays sound through any frame. -/
-theorem frame_sound {s : Session} (h : s.state.Sound) (f : Frame) : (s.frame f).state.Sound :=
-  h.run _
-
-theorem play_sound {s : Session} (h : s.state.Sound) (fs : List Frame) :
-    (s.play fs).1.state.Sound := by
-  rw [play_state]
-  exact h.run _
+/--
+**Pacing cannot break the game.** A session holds a proof that its state is
+sound, and advancing it must produce one, so soundness after any frames is
+simply read off the result.
+-/
+theorem play_sound (s : Session) (fs : List Frame) : (s.play fs).1.state.Sound :=
+  (s.play fs).1.sound
 
 end Session
 

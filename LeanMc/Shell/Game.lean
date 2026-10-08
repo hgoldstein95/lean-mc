@@ -2,7 +2,8 @@ import LeanMc.FFI
 import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
-import LeanMc.Core.Session
+import LeanMc.Core.Start
+import LeanMc.Core.View
 import LeanMc.Shell.Atlas
 
 /-!
@@ -21,9 +22,8 @@ namespace LeanMc.Shell
 
 open FFI
 
-/-- How far chunks are kept loaded around the player, in chunks. -/
-def viewRadius : Int := 6
-def viewRadiusY : Int := 4
+/-- How far chunks are kept loaded around the player. -/
+def view : ViewRange := ⟨6, 4⟩
 
 /-- Blocks the number keys select for placing. -/
 def palette : Array Block := #[.stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
@@ -52,15 +52,14 @@ structure Game where
   ticks : Nat := 0
   frame : Nat := 0
 
-/-- Offsets of every chunk within view of a centre chunk, nearest first. -/
-def chunkOffsets : Array (Int × Int × Int) := Id.run do
-  let mut out := #[]
-  for i in [0:(2 * viewRadius + 1).toNat] do
-    for j in [0:(2 * viewRadiusY + 1).toNat] do
-      for k in [0:(2 * viewRadius + 1).toNat] do
-        out := out.push ((i : Int) - viewRadius, (j : Int) - viewRadiusY, (k : Int) - viewRadius)
+/--
+Offsets of every chunk in view of a centre chunk, nearest first. Which offsets
+there are comes from the core (`ViewRange.contains_iff_offset`); the shell only
+chooses the order.
+-/
+def chunkOffsets : Array (Int × Int × Int) :=
   let dist := fun (o : Int × Int × Int) => o.1 * o.1 + o.2.1 * o.2.1 + o.2.2 * o.2.2
-  return out.qsort fun a b => dist a < dist b
+  view.offsets.toArray.qsort fun a b => dist a < dist b
 
 namespace Game
 
@@ -102,33 +101,33 @@ def meshChunk (g : Game) (c : ChunkPos) : IO Game := do
 
 /--
 Bring the cache and meshes up to date with a block change the world has
-already had. Only the chunk holding the block and the chunks holding its
-neighbours can change (`LeanMc.meshChunk_set`), so only those are rebuilt.
+already had. No chunk outside `dirtyChunks` can change
+(`LeanMc.meshChunk_set_of_not_dirty`), so only those are rebuilt.
 -/
 def mirrorEdit (g : Game) (p : BlockPos) (b : Block) : IO Game := do
   let mut g := { g with cache := g.cache.setBlock p b }
-  let mut dirty := [p.chunkPos]
-  for d in Dir.all do
-    let c := (p.step d).chunkPos
-    unless dirty.contains c do
-      dirty := c :: dirty
-  for c in dirty do
+  for c in dirtyChunks p do
     if g.meshes.contains c then
       g ← g.meshChunk c
   return g
 
-/-- Change one block directly, outside the simulation. Used to set up test scenes. -/
+/--
+Change one block directly, outside the simulation, to set up a test scene. The
+core refuses a change that would leave the state unsound; such a change is
+skipped.
+-/
 def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
-  let state := { g.session.state with world := g.world.set p b }
-  mirrorEdit { g with session := { g.session with state } } p b
+  match g.session.edit? p b with
+  | some session => mirrorEdit { g with session } p b
+  | none => return g
 
 /-- Mesh missing chunks around the player, nearest first, for up to `budgetMs`. -/
 def stream (g : Game) (budgetMs : Nat) : IO Game := do
   let centre := g.eye.blockPos.chunkPos
   let start ← IO.monoMsNow
   let mut g := g
-  for (dx, dy, dz) in chunkOffsets do
-    let c : ChunkPos := ⟨centre.x + dx, centre.y + dy, centre.z + dz⟩
+  for o in chunkOffsets do
+    let c := ViewRange.offsetChunk centre o
     unless g.meshes.contains c do
       g ← g.meshChunk c
       if (← IO.monoMsNow) - start ≥ budgetMs then
@@ -138,18 +137,14 @@ def stream (g : Game) (budgetMs : Nat) : IO Game := do
 /-- Drop meshes and cached chunks that are well out of view. -/
 def unloadFar (g : Game) : IO Game := do
   let centre := g.eye.blockPos.chunkPos
-  let far (c : ChunkPos) (slack : Int) : Bool :=
-    (c.x - centre.x).natAbs > viewRadius + slack
-      || (c.y - centre.y).natAbs > viewRadiusY + slack
-      || (c.z - centre.z).natAbs > viewRadius + slack
   let mut meshes := g.meshes
   for (c, mesh) in g.meshes do
-    if far c 1 then
+    if view.isFar centre c 1 then
       unloadMesh mesh
       meshes := meshes.erase c
   let mut cache := g.cache
   for (c, _) in g.cache.chunks do
-    if far c 2 then
+    if view.isFar centre c 2 then
       cache := cache.unload c
   return { g with meshes, cache }
 
@@ -448,15 +443,24 @@ def run (args : List String) : IO UInt32 := do
       IO.eprintln message
       IO.eprintln "usage: leanmc [--seed N] [--flat] [--at X Y Z] [--frames N] [--selftest PNG | --flytest PNG | --inputtest]"
       return 2
-  let world := if opts.flat then World.new Terrain.flat else Terrain.world opts.seed
-  let pos :=
-    match opts.start with
-    | some b => standNear world b
-    | none => if opts.flat then standNear world ⟨7, 12, 14⟩ else Terrain.spawn opts.seed
+  -- A session can only be built with a proof that its state is sound: either the
+  -- generated world's own start, or a position the core has checked.
+  let started : Option Session :=
+    if opts.flat then
+      let pos := standNear Terrain.flatWorld (opts.start.getD ⟨7, 12, 14⟩)
+      Session.start? Terrain.flatWorld Terrain.flatWorld_floor { pos }
+    else
+      match opts.start with
+      | none => some (Terrain.session opts.seed)
+      | some b =>
+        let world := Terrain.world opts.seed
+        Session.start? world (Terrain.world_floor_get opts.seed) { pos := standNear world b }
+  let some session := started
+    | IO.eprintln "there is nowhere to stand at that position"
+      return 1
+  let pos := session.state.player.pos
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
-  let session : Session :=
-    if opts.flat || opts.start.isSome then { state := ⟨world, { pos }⟩ } else Terrain.session opts.seed
   let game : Game := { session, prevPos := pos, pitch := -0.35, yaw := 0.15 }
   if opts.inputtest then
     let code ← inputTest game
