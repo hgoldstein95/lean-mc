@@ -9,6 +9,7 @@ import LeanMc.Proofs.Ray
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
 import LeanMc.Proofs.View
+import LeanMc.Proofs.Render
 import LeanMc.Core.Start
 import LeanMc.Proofs.Generated
 
@@ -164,3 +165,17 @@ open LeanMc
   State.edit_place
   State.step_dig
   State.step_place
+
+-- The renderer, against the model of the shim
+#assert_standard_axioms
+  Gpu.decode_packFaces
+  Gpu.decode_meshChunk
+  Renderer.Synced.initial
+  Renderer.Synced.setMesh
+  Renderer.Synced.remesh
+  Renderer.Synced.drop
+  Renderer.Synced.applyEdit
+  Renderer.Synced.dropFar
+  Renderer.Synced.draw
+  Renderer.Synced.scene_sound
+  Renderer.Synced.scene_complete

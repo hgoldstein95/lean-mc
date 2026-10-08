@@ -61,13 +61,21 @@ target shim.o pkg : FilePath := do
     let weakArgs := #["-I", (← getLeanIncludeDir).toString, "-I", (pkg.dir / raylibSrc).toString]
     buildO oFile srcJob weakArgs #["-O2", "-fPIC"] "cc"
 
+/-- The process entry point, bound to this program's root module; see `ffi/entry.c`. -/
+target entry.o pkg : FilePath := do
+  let oFile := pkg.buildDir / "ffi" / "entry.o"
+  let srcJob ← inputTextFile <| pkg.dir / "ffi" / "entry.c"
+  let weakArgs := #["-I", (← getLeanIncludeDir).toString]
+  buildO oFile srcJob weakArgs
+    #["-O2", "-fPIC", "-DLMC_INIT=initialize_leanmc_Main", "-DLMC_ENTRY=lmc_main"] "cc"
+
 @[default_target]
 lean_lib LeanMc
 
 @[default_target]
 lean_exe leanmc where
   root := `Main
-  moreLinkObjs := #[shim.o]
+  moreLinkObjs := #[shim.o, entry.o]
   moreLinkLibs := #[raylib]
 
 /-- Executable checks on the pure core; no native code needed. -/

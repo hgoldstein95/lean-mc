@@ -97,24 +97,52 @@ def left : UInt32 := 0
 def right : UInt32 := 1
 end Mouse
 
-/-! ## Meshes -/
+/-! ## Meshes
 
-/-- Size of one packed vertex; see the layout comment in `ffi/shim.c`. -/
-def vertexBytes : Nat := 8
-
-/--
-Upload packed, non-indexed triangle vertices and return a mesh handle.
-Handle `0` means "no mesh" and is returned for empty input.
+A table of meshes in numbered slots; `LeanMc.Gpu` is the model of it. A misuse
+does nothing but set the fault flag.
 -/
-@[extern "lmc_upload_mesh"]
-opaque uploadMesh (vertices : @& ByteArray) : IO UInt32
 
-/-- Draw a mesh translated by `(tx, ty, tz)`. -/
-@[extern "lmc_draw_mesh"]
-opaque drawMesh (mesh : UInt32) (tx ty tz : Float) : IO Unit
+/-- Put packed, non-indexed triangle vertices in a slot, replacing what was there. -/
+@[extern "lmc_mesh_upload"]
+opaque meshUpload (slot : UInt32) (vertices : @& ByteArray) : IO Unit
 
-@[extern "lmc_unload_mesh"]
-opaque unloadMesh (mesh : UInt32) : IO Unit
+/-- Empty a slot. -/
+@[extern "lmc_mesh_unload"]
+opaque meshUnload (slot : UInt32) : IO Unit
+
+/-- Start a scene with nothing drawn. -/
+@[extern "lmc_scene_begin"]
+opaque sceneBegin : IO Unit
+
+/-- Draw a slot's mesh translated by `(tx, ty, tz)`. -/
+@[extern "lmc_mesh_draw"]
+opaque meshDraw (slot : UInt32) (tx ty tz : Float) : IO Unit
+
+/-! ## Read-back, for tests -/
+
+/-- How the shim reads packed vertices: twelve numbers each (position, uv, normal, colour). -/
+@[extern "lmc_debug_decode"]
+opaque debugDecode (vertices : @& ByteArray) : IO FloatArray
+
+/-- The vertices a slot holds, in the layout of `debugDecode`; empty for an empty slot. -/
+@[extern "lmc_debug_mesh"]
+opaque debugMesh (slot : UInt32) : IO FloatArray
+
+@[extern "lmc_debug_mesh_live"]
+opaque debugMeshLive (slot : UInt32) : IO Bool
+
+/-- The draws since the scene began: four numbers each, slot then offset. -/
+@[extern "lmc_debug_scene"]
+opaque debugScene : IO FloatArray
+
+/-- Whether any mesh command so far was a misuse. -/
+@[extern "lmc_debug_fault"]
+opaque debugFault : IO Bool
+
+/-- Empty every slot and clear the scene and the fault flag. -/
+@[extern "lmc_debug_reset"]
+opaque debugReset : IO Unit
 
 /-- Outline the box with minimum corner `(x, y, z)` and size `(sx, sy, sz)`, in 3D mode. -/
 @[extern "lmc_draw_box_wires"]

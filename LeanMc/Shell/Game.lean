@@ -4,6 +4,7 @@ import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
 import LeanMc.Core.Start
 import LeanMc.Core.View
+import LeanMc.Core.Render
 import LeanMc.Shell.Atlas
 
 /-!
@@ -36,9 +37,8 @@ def blockName : Block → String
 structure Game where
   /-- The simulated game and the bookkeeping that paces it; all of it lives in the core. -/
   session : Session
-  cache : ChunkCache := {}
-  /-- Uploaded mesh for each meshed chunk; handle `0` is an empty mesh. -/
-  meshes : Std.HashMap ChunkPos UInt32 := {}
+  /-- The render planner's memory: cached chunks and which mesh slot each chunk holds. -/
+  renderer : Renderer := {}
   /-- Where the player was one tick ago, so that drawing can blend between ticks. -/
   prevPos : Vec3
   yaw : Float := 0.0
@@ -88,28 +88,19 @@ def lookVector (g : Game) : Vec3 :=
   let scale := State.reach.toFloat
   ⟨(dx * scale).toInt64.toInt, (dy * scale).toInt64.toInt, (dz * scale).toInt64.toInt⟩
 
-/-- (Re)build and upload the mesh for chunk `c`. -/
-def meshChunk (g : Game) (c : ChunkPos) : IO Game := do
-  let mut cache := g.cache.load g.world c
-  for d in Dir.all do
-    cache := cache.load g.world (c.step d)
-  let bytes := LeanMc.meshChunk (cache.blockAt g.world) c
-  if let some old := g.meshes[c]? then
-    unloadMesh old
-  let mesh ← uploadMesh bytes
-  return { g with cache, meshes := g.meshes.insert c mesh }
+/-- Carry out one instruction from the planner. This is the whole of the shell's rendering logic. -/
+def send : GpuCmd → IO Unit
+  | .upload slot vertices => meshUpload slot.toUInt32 vertices
+  | .unload slot => meshUnload slot.toUInt32
+  | .beginScene => sceneBegin
+  | .draw slot offset =>
+    meshDraw slot.toUInt32 (Float.ofInt offset.x / 65536.0) (Float.ofInt offset.y / 65536.0)
+      (Float.ofInt offset.z / 65536.0)
 
-/--
-Bring the cache and meshes up to date with a block change the world has
-already had. No chunk outside `dirtyChunks` can change
-(`LeanMc.meshChunk_set_of_not_dirty`), so only those are rebuilt.
--/
-def mirrorEdit (g : Game) (p : BlockPos) (b : Block) : IO Game := do
-  let mut g := { g with cache := g.cache.setBlock p b }
-  for c in dirtyChunks p do
-    if g.meshes.contains c then
-      g ← g.meshChunk c
-  return g
+/-- Take a planning step: keep the planner's new memory and carry out its instructions. -/
+def plan (g : Game) (step : Renderer × List GpuCmd) : IO Game := do
+  step.2.forM send
+  return { g with renderer := step.1 }
 
 /--
 Change one block directly, outside the simulation, to set up a test scene. The
@@ -118,7 +109,9 @@ skipped.
 -/
 def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
   match g.session.edit? p b with
-  | some session => mirrorEdit { g with session } p b
+  | some session =>
+    let g := { g with session }
+    g.plan (g.renderer.applyEdit g.world p b)
   | none => return g
 
 /-- Mesh missing chunks around the player, nearest first, for up to `budgetMs`. -/
@@ -128,41 +121,34 @@ def stream (g : Game) (budgetMs : Nat) : IO Game := do
   let mut g := g
   for o in chunkOffsets do
     let c := ViewRange.offsetChunk centre o
-    unless g.meshes.contains c do
-      g ← g.meshChunk c
+    unless g.renderer.slots.contains c do
+      g ← g.plan (g.renderer.remesh g.world c)
       if (← IO.monoMsNow) - start ≥ budgetMs then
         break
   return g
 
 /-- Drop meshes and cached chunks that are well out of view. -/
-def unloadFar (g : Game) : IO Game := do
-  let centre := g.eye.blockPos.chunkPos
-  let mut meshes := g.meshes
-  for (c, mesh) in g.meshes do
-    if view.isFar centre c 1 then
-      unloadMesh mesh
-      meshes := meshes.erase c
-  let mut cache := g.cache
-  for (c, _) in g.cache.chunks do
-    if view.isFar centre c 2 then
-      cache := cache.unload c
-  return { g with meshes, cache }
+def unloadFar (g : Game) : IO Game :=
+  g.plan (g.renderer.dropFar view g.eye.blockPos.chunkPos)
 
 /--
 Advance the simulation by one frame. The core decides how many ticks run, what
-each is told and what changes; the shell only mirrors block changes into the
-cache and rebuilds the meshes they affect.
+each is told and what changes, and the planner decides what to rebuild.
 -/
 def advance (g : Game) (frame : Frame) : IO Game := do
   let ran := g.session.ticksDue frame
+  let before := g.world
   let (session, log) := g.session.frameLog frame
   let mut g := { g with
     session
     prevPos := log.before.getD g.prevPos
     ticks := g.ticks + ran
     edits := g.edits + log.edits.size }
+  -- Replay the block changes one at a time so the planner sees each world in turn.
+  let mut world := before
   for (p, b) in log.edits do
-    g ← g.mirrorEdit p b
+    world := world.set p b
+    g ← g.plan (g.renderer.applyEdit world p b)
   return g
 
 /-- Turn the mouse into a view direction and handle capturing it. -/
@@ -225,26 +211,17 @@ def readFrame (g : Game) : IO (Game × Frame) := do
 
 def draw (g : Game) : IO Unit := do
   let eye := g.eye
-  let base := eye.blockPos
-  -- The eye's offset within its block, which is all the precision the renderer needs.
-  let frac (v b : Int) : Float := Float.ofInt (v - b * 65536) / 65536.0
-  let (ox, oy, oz) := (frac eye.x base.x, frac eye.y base.y, frac eye.z base.z)
   beginFrame 0x87b5ffff
   let (dx, dy, dz) := g.lookDir
   begin3D 0 0 0 dx dy dz 70.0
-  let mut drawn := 0
-  for (c, mesh) in g.meshes do
-    if mesh != 0 then
-      drawn := drawn + 1
-      drawMesh mesh
-        (Float.ofInt (16 * c.x - base.x) - ox)
-        (Float.ofInt (16 * c.y - base.y) - oy)
-        (Float.ofInt (16 * c.z - base.z) - oz)
+  -- The planner's offsets are measured from the eye, so the camera sits at the origin.
+  let draws := g.renderer.drawCmds eye
+  draws.forM send
+  let drawn := draws.length - 1
   if let some hit := g.state.target g.lookVector then
     let b := hit.block
-    drawBoxWires
-      (Float.ofInt (b.x - base.x) - ox - 0.003) (Float.ofInt (b.y - base.y) - oy - 0.003)
-      (Float.ofInt (b.z - base.z) - oz - 0.003) 1.006 1.006 1.006 0x000000ff
+    let rel (block eye : Int) : Float := Float.ofInt (block * 65536 - eye) / 65536.0 - 0.003
+    drawBoxWires (rel b.x eye.x) (rel b.y eye.y) (rel b.z eye.z) 1.006 1.006 1.006 0x000000ff
   end3D
   let w ← screenWidth
   let h ← screenHeight
@@ -254,7 +231,8 @@ def draw (g : Game) : IO Unit := do
   let feet := g.player.pos.blockPos
   let mode := if g.player.flying then "flying" else if g.player.onGround then "on ground" else "in air"
   drawText s!"block {feet.x} {feet.y} {feet.z}   {mode}   {fps} fps" 10 10 20 0xffffffff
-  drawText s!"chunks {g.meshes.size} meshed, {drawn} drawn, {g.cache.chunks.size} cached"
+  drawText s!"chunks {g.renderer.slots.size} meshed, {drawn} drawn, \
+      {g.renderer.cache.chunks.size} cached"
     10 34 16 0xffffffff
   drawText s!"placing: {blockName (palette[g.selected]?.getD .stone)}  (keys 1-{palette.size})"
     10 54 16 0xffffffff
@@ -365,7 +343,8 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
       takeScreenshot path
     endFrame
     let p := g.player
-    IO.println s!"frame {g.frame}: {g.meshes.size} meshed, {g.cache.chunks.size} cached, \
+    IO.println s!"frame {g.frame}: {g.renderer.slots.size} meshed, \
+      {g.renderer.cache.chunks.size} cached, shim faults: {← debugFault}, \
       feet at {p.pos.x} {p.pos.y} {p.pos.z} units, block {p.pos.blockPos.x} {p.pos.blockPos.y} \
       {p.pos.blockPos.z}, onGround {p.onGround}, flying {p.flying}, {g.edits} blocks dug or \
       placed, {g.ticks} ticks, inside something solid: {Player.blocked g.world.solid p.pos}"
@@ -411,7 +390,8 @@ def inputTest (g : Game) : IO UInt32 := do
   ok := (← report "a dig pressed between ticks still digs" (g.edits == before + 1)) && ok
   ok := (← report "the dug block is gone from the world and from the cache" <|
     match target with
-    | some hit => g.world.get hit.block == .air && g.cache.blockAt g.world hit.block == .air
+    | some hit =>
+      g.world.get hit.block == .air && g.renderer.cache.blockAt g.world hit.block == .air
     | none => false) && ok
   g := { g with pitch := -0.45, yaw := 0.7 }
   let before := g.edits

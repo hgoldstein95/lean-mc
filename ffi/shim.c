@@ -106,7 +106,11 @@ lean_obj_res lmc_set_cursor_captured(uint8_t captured) {
 
 /* ---- Meshes --------------------------------------------------------------
  *
- * Lean hands over a byte array of non-indexed triangle vertices, 8 bytes each:
+ * A table of meshes in numbered slots. Lean chooses the slot, so there is no
+ * allocation logic here. `LeanMc.Gpu` in Core/Render.lean is the model of this
+ * section, and the tests compare the two; keep them in step.
+ *
+ * A mesh is a byte array of non-indexed triangle vertices, 8 bytes each:
  *
  *   [0] x  [1] y  [2] z   position in whole blocks, chunk-local
  *   [3] u  [4] v          texture corner in atlas tiles (atlas is 16x16 tiles)
@@ -114,31 +118,55 @@ lean_obj_res lmc_set_cursor_captured(uint8_t captured) {
  *   [6] normal            face direction 0..5 = +x -x +y -y +z -z
  *   [7] reserved
  *
- * Handle 0 is "no mesh"; drawing or unloading it is a no-op.
+ * A misuse (a bad slot, a malformed mesh, drawing or emptying an empty slot)
+ * does nothing except set the fault flag.
  */
 
 #define LMC_VERTEX_BYTES 8
+#define LMC_TRIANGLE_BYTES 24
 #define LMC_ATLAS_TILES 16.0f
 #define LMC_MAX_MESHES 16384
+#define LMC_SCENE_LOG 8192
 
 static Mesh g_meshes[LMC_MAX_MESHES];
-static bool g_mesh_used[LMC_MAX_MESHES];
+static bool g_mesh_live[LMC_MAX_MESHES];
+static bool g_fault = false;
+
+/* The draws made since the scene began, for the tests to read back. */
+static double g_scene[LMC_SCENE_LOG][4];
+static size_t g_scene_count = 0;
 
 static const float g_normals[6][3] = {
     {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
 };
 
-lean_obj_res lmc_upload_mesh(b_lean_obj_arg bytes) {
-    size_t n = lean_sarray_size(bytes) / LMC_VERTEX_BYTES;
-    n -= n % 3;
-    if (n == 0) return LMC_U32(0);
+/* What one packed vertex means. Everything that reads a vertex goes through here. */
+static void lmc_decode_vertex(const uint8_t *v, float *pos, float *uv, float *nrm,
+                              unsigned char *col) {
+    pos[0] = (float)v[0];
+    pos[1] = (float)v[1];
+    pos[2] = (float)v[2];
+    uv[0] = (float)v[3] / LMC_ATLAS_TILES;
+    uv[1] = (float)v[4] / LMC_ATLAS_TILES;
+    const float *n = g_normals[v[6] < 6 ? v[6] : 0];
+    nrm[0] = n[0];
+    nrm[1] = n[1];
+    nrm[2] = n[2];
+    col[0] = v[5];
+    col[1] = v[5];
+    col[2] = v[5];
+    col[3] = 255;
+}
 
-    uint32_t id = 0;
-    for (uint32_t i = 1; i < LMC_MAX_MESHES; i++) {
-        if (!g_mesh_used[i]) { id = i; break; }
+lean_obj_res lmc_mesh_upload(uint32_t slot, b_lean_obj_arg bytes) {
+    size_t size = lean_sarray_size(bytes);
+    if (slot == 0 || slot >= LMC_MAX_MESHES || size == 0 || size % LMC_TRIANGLE_BYTES != 0) {
+        g_fault = true;
+        return LMC_UNIT;
     }
-    if (id == 0) return LMC_U32(0);
+    if (g_mesh_live[slot]) UnloadMesh(g_meshes[slot]);
 
+    size_t n = size / LMC_VERTEX_BYTES;
     const uint8_t *src = lean_sarray_cptr(bytes);
     Mesh mesh = {0};
     mesh.vertexCount = (int)n;
@@ -147,40 +175,121 @@ lean_obj_res lmc_upload_mesh(b_lean_obj_arg bytes) {
     mesh.texcoords = (float *)MemAlloc((unsigned int)(n * 2 * sizeof(float)));
     mesh.normals = (float *)MemAlloc((unsigned int)(n * 3 * sizeof(float)));
     mesh.colors = (unsigned char *)MemAlloc((unsigned int)(n * 4));
-
     for (size_t i = 0; i < n; i++) {
-        const uint8_t *v = src + i * LMC_VERTEX_BYTES;
-        mesh.vertices[i * 3 + 0] = (float)v[0];
-        mesh.vertices[i * 3 + 1] = (float)v[1];
-        mesh.vertices[i * 3 + 2] = (float)v[2];
-        mesh.texcoords[i * 2 + 0] = (float)v[3] / LMC_ATLAS_TILES;
-        mesh.texcoords[i * 2 + 1] = (float)v[4] / LMC_ATLAS_TILES;
-        const float *nrm = g_normals[v[6] < 6 ? v[6] : 0];
-        mesh.normals[i * 3 + 0] = nrm[0];
-        mesh.normals[i * 3 + 1] = nrm[1];
-        mesh.normals[i * 3 + 2] = nrm[2];
-        mesh.colors[i * 4 + 0] = v[5];
-        mesh.colors[i * 4 + 1] = v[5];
-        mesh.colors[i * 4 + 2] = v[5];
-        mesh.colors[i * 4 + 3] = 255;
+        lmc_decode_vertex(src + i * LMC_VERTEX_BYTES, mesh.vertices + i * 3,
+                          mesh.texcoords + i * 2, mesh.normals + i * 3, mesh.colors + i * 4);
     }
-
     UploadMesh(&mesh, false);
-    g_meshes[id] = mesh;
-    g_mesh_used[id] = true;
-    return LMC_U32(id);
-}
-
-lean_obj_res lmc_draw_mesh(uint32_t id, double tx, double ty, double tz) {
-    if (id == 0 || id >= LMC_MAX_MESHES || !g_mesh_used[id]) return LMC_UNIT;
-    DrawMesh(g_meshes[id], g_material, MatrixTranslate((float)tx, (float)ty, (float)tz));
+    g_meshes[slot] = mesh;
+    g_mesh_live[slot] = true;
     return LMC_UNIT;
 }
 
-lean_obj_res lmc_unload_mesh(uint32_t id) {
-    if (id == 0 || id >= LMC_MAX_MESHES || !g_mesh_used[id]) return LMC_UNIT;
-    UnloadMesh(g_meshes[id]);
-    g_mesh_used[id] = false;
+lean_obj_res lmc_mesh_unload(uint32_t slot) {
+    if (slot >= LMC_MAX_MESHES || !g_mesh_live[slot]) {
+        g_fault = true;
+        return LMC_UNIT;
+    }
+    UnloadMesh(g_meshes[slot]);
+    g_mesh_live[slot] = false;
+    return LMC_UNIT;
+}
+
+/* Start a scene with nothing drawn. */
+lean_obj_res lmc_scene_begin(void) {
+    g_scene_count = 0;
+    return LMC_UNIT;
+}
+
+lean_obj_res lmc_mesh_draw(uint32_t slot, double tx, double ty, double tz) {
+    if (slot >= LMC_MAX_MESHES || !g_mesh_live[slot]) {
+        g_fault = true;
+        return LMC_UNIT;
+    }
+    DrawMesh(g_meshes[slot], g_material, MatrixTranslate((float)tx, (float)ty, (float)tz));
+    if (g_scene_count < LMC_SCENE_LOG) {
+        g_scene[g_scene_count][0] = (double)slot;
+        g_scene[g_scene_count][1] = tx;
+        g_scene[g_scene_count][2] = ty;
+        g_scene[g_scene_count][3] = tz;
+        g_scene_count++;
+    }
+    return LMC_UNIT;
+}
+
+/* ---- Read-back, for tests ------------------------------------------------ */
+
+static lean_obj_res lmc_float_array(size_t n) {
+    lean_object *arr = lean_alloc_sarray(sizeof(double), n, n);
+    return arr;
+}
+
+/* Twelve numbers per vertex: position, texture coordinate, normal, colour. */
+static void lmc_write_vertex(double *out, const float *pos, const float *uv, const float *nrm,
+                             const unsigned char *col) {
+    out[0] = pos[0]; out[1] = pos[1]; out[2] = pos[2];
+    out[3] = uv[0];  out[4] = uv[1];
+    out[5] = nrm[0]; out[6] = nrm[1]; out[7] = nrm[2];
+    out[8] = col[0]; out[9] = col[1]; out[10] = col[2]; out[11] = col[3];
+}
+
+/* How this shim reads packed vertices, without touching the graphics card. */
+lean_obj_res lmc_debug_decode(b_lean_obj_arg bytes) {
+    size_t n = lean_sarray_size(bytes) / LMC_VERTEX_BYTES;
+    const uint8_t *src = lean_sarray_cptr(bytes);
+    lean_object *arr = lmc_float_array(n * 12);
+    double *out = (double *)lean_sarray_cptr(arr);
+    for (size_t i = 0; i < n; i++) {
+        float pos[3], uv[2], nrm[3];
+        unsigned char col[4];
+        lmc_decode_vertex(src + i * LMC_VERTEX_BYTES, pos, uv, nrm, col);
+        lmc_write_vertex(out + i * 12, pos, uv, nrm, col);
+    }
+    return lean_io_result_mk_ok(arr);
+}
+
+/* The vertices a slot holds, as uploaded; empty if the slot is empty. */
+lean_obj_res lmc_debug_mesh(uint32_t slot) {
+    if (slot >= LMC_MAX_MESHES || !g_mesh_live[slot]) {
+        return lean_io_result_mk_ok(lmc_float_array(0));
+    }
+    Mesh *m = &g_meshes[slot];
+    size_t n = (size_t)m->vertexCount;
+    lean_object *arr = lmc_float_array(n * 12);
+    double *out = (double *)lean_sarray_cptr(arr);
+    for (size_t i = 0; i < n; i++) {
+        lmc_write_vertex(out + i * 12, m->vertices + i * 3, m->texcoords + i * 2,
+                         m->normals + i * 3, m->colors + i * 4);
+    }
+    return lean_io_result_mk_ok(arr);
+}
+
+lean_obj_res lmc_debug_mesh_live(uint32_t slot) {
+    return LMC_BOOL(slot < LMC_MAX_MESHES && g_mesh_live[slot]);
+}
+
+/* The draws since the scene began: four numbers each, slot then offset. */
+lean_obj_res lmc_debug_scene(void) {
+    lean_object *arr = lmc_float_array(g_scene_count * 4);
+    double *out = (double *)lean_sarray_cptr(arr);
+    for (size_t i = 0; i < g_scene_count; i++) {
+        for (int k = 0; k < 4; k++) out[i * 4 + k] = g_scene[i][k];
+    }
+    return lean_io_result_mk_ok(arr);
+}
+
+lean_obj_res lmc_debug_fault(void) { return LMC_BOOL(g_fault); }
+
+/* Empty every slot and clear the scene and the fault flag. */
+lean_obj_res lmc_debug_reset(void) {
+    for (uint32_t i = 0; i < LMC_MAX_MESHES; i++) {
+        if (g_mesh_live[i]) {
+            UnloadMesh(g_meshes[i]);
+            g_mesh_live[i] = false;
+        }
+    }
+    g_scene_count = 0;
+    g_fault = false;
     return LMC_UNIT;
 }
 
@@ -221,43 +330,4 @@ lean_obj_res lmc_draw_text(b_lean_obj_arg text, uint32_t x, uint32_t y, uint32_t
 lean_obj_res lmc_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgba) {
     DrawRectangle((int)x, (int)y, (int)w, (int)h, lmc_color(rgba));
     return LMC_UNIT;
-}
-
-/* ---- Process entry point ---------------------------------------------------
- *
- * Lean's generated `main` runs the program on a worker thread, but macOS only
- * allows windows and events on the process's main thread. So the root module
- * defines no Lean `main`; it exports `lmc_main` instead, and this `main` does
- * the same runtime setup the generated one would before calling it directly.
- */
-
-char **lean_setup_args(int argc, char **argv);
-lean_object *initialize_leanmc_Main(uint8_t builtin);
-lean_object *lmc_main(lean_object *args);
-
-int main(int argc, char **argv) {
-    argv = lean_setup_args(argc, argv);
-    lean_object *res = initialize_leanmc_Main(1);
-    lean_io_mark_end_initialization();
-    if (lean_io_result_is_ok(res)) {
-        lean_dec_ref(res);
-        lean_init_task_manager();
-        lean_object *args = lean_box(0);
-        for (int i = argc - 1; i >= 1; i--) {
-            lean_object *cell = lean_alloc_ctor(1, 2, 0);
-            lean_ctor_set(cell, 0, lean_mk_string(argv[i]));
-            lean_ctor_set(cell, 1, args);
-            args = cell;
-        }
-        res = lmc_main(args);
-    }
-    lean_finalize_task_manager();
-    if (!lean_io_result_is_ok(res)) {
-        lean_io_result_show_error(res);
-        lean_dec_ref(res);
-        return 1;
-    }
-    int code = (int)lean_unbox_uint32(lean_io_result_get_value(res));
-    lean_dec_ref(res);
-    return code;
 }
