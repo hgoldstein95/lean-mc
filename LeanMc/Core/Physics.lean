@@ -66,6 +66,16 @@ def blockRange (lo hi : Int) : List Int :=
 
 namespace Box
 
+/-- The box and the block at `p` share some volume. -/
+def Overlaps (b : Box) (p : BlockPos) : Prop :=
+  b.lo.x < (p.x + 1) * 65536 ∧ p.x * 65536 < b.hi.x ∧
+  b.lo.y < (p.y + 1) * 65536 ∧ p.y * 65536 < b.hi.y ∧
+  b.lo.z < (p.z + 1) * 65536 ∧ p.z * 65536 < b.hi.z
+
+instance (b : Box) (p : BlockPos) : Decidable (b.Overlaps p) := by
+  unfold Overlaps
+  infer_instance
+
 /-- Whether the box overlaps any solid block. -/
 def collides (solid : BlockPos → Bool) (b : Box) : Bool :=
   (blockRange b.lo.x b.hi.x).any fun x =>

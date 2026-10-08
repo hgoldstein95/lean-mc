@@ -78,6 +78,7 @@ opaque setCursorCaptured (captured : Bool) : IO Unit
 namespace Key
 def space : UInt32 := 32
 def zero : UInt32 := 48
+def one : UInt32 := 49
 def a : UInt32 := 65
 def d : UInt32 := 68
 def e : UInt32 := 69
@@ -114,6 +115,10 @@ opaque drawMesh (mesh : UInt32) (tx ty tz : Float) : IO Unit
 
 @[extern "lmc_unload_mesh"]
 opaque unloadMesh (mesh : UInt32) : IO Unit
+
+/-- Outline the box with minimum corner `(x, y, z)` and size `(sx, sy, sz)`, in 3D mode. -/
+@[extern "lmc_draw_box_wires"]
+opaque drawBoxWires (x y z sx sy sz : Float) (rgba : UInt32) : IO Unit
 
 /-- Replace the block texture atlas with a `width × height` RGBA8 image. -/
 @[extern "lmc_set_atlas"]

@@ -2,6 +2,7 @@ import LeanMc.Core.Generated
 import LeanMc.Proofs.World
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
+import LeanMc.Proofs.Game
 
 /-!
 # Theorems about the generated world
@@ -71,6 +72,25 @@ whose feet are above bedrock keeps them above bedrock.
 theorem step_above_bedrock (seed : UInt64) (input : Input) {p : Player} (h : 65536 ≤ p.pos.y) :
     65536 ≤ (Player.step (world seed).solid input p).pos.y :=
   Player.step_above_floor (world_floor seed) input h
+
+/-! ## The game as a whole -/
+
+/-- A new game starts in a sound state. -/
+theorem initial_sound (seed : UInt64) : (initial seed).Sound where
+  free := spawn_free seed
+  floor x z := by simp [initial, generate_bedrock]
+  above := by
+    have hb := height_bounds seed 0 0
+    refine Player.settle_above_floor (world_floor seed) 16 ?_ ?_ <;>
+      simp only [spawnStart, minHeight, maxTreeHeight] at hb ⊢ <;> omega
+
+/--
+**The game never goes wrong.** Whatever the seed and whatever commands are
+played, for however long: the player is never inside a solid block, the
+bedrock floor is never broken, and the player never falls through it.
+-/
+theorem play_sound (seed : UInt64) (cmds : List Command) : ((initial seed).run cmds).Sound :=
+  (initial_sound seed).run cmds
 
 end LeanMc.Terrain
 

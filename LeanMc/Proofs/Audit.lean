@@ -5,6 +5,8 @@ import LeanMc.Proofs.World
 import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
+import LeanMc.Proofs.Ray
+import LeanMc.Proofs.Game
 import LeanMc.Proofs.Generated
 
 /-!
@@ -104,3 +106,23 @@ open LeanMc
   Terrain.generate_above_column
   Terrain.spawn_free
   Terrain.step_above_bedrock
+
+-- Targeting
+#assert_standard_axioms
+  Ray.cast_solid
+  Ray.cast_face_clear
+  Ray.cast_walk
+  Ray.cast_within
+
+-- The game
+#assert_standard_axioms
+  State.edit_cases
+  State.edit_near
+  State.step_changes_at_most_one
+  State.step_solid_unchanged_or_air
+  State.step_bedrock
+  State.step_free
+  State.Sound.step
+  State.Sound.run
+  Terrain.initial_sound
+  Terrain.play_sound

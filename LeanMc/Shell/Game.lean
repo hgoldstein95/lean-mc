@@ -2,6 +2,7 @@ import LeanMc.FFI
 import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
+import LeanMc.Core.Game
 import LeanMc.Shell.Atlas
 
 /-!
@@ -27,6 +28,14 @@ def viewRadiusY : Int := 4
 /-- Seconds per simulation tick. -/
 def tickSeconds : Float := 1.0 / ticksPerSecond.toFloat
 
+/-- Blocks the number keys select for placing. -/
+def palette : Array Block := #[.stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
+
+def blockName : Block → String
+  | .air => "air" | .bedrock => "bedrock" | .stone => "stone" | .dirt => "dirt"
+  | .grass => "grass" | .sand => "sand" | .log => "log" | .leaves => "leaves"
+  | .planks => "planks" | .cobble => "cobble"
+
 structure Game where
   world : World
   cache : ChunkCache := {}
@@ -40,6 +49,10 @@ structure Game where
   /-- Simulated time not yet turned into ticks, in seconds. -/
   tickDebt : Float := 0.0
   captured : Bool := false
+  /-- Index into `palette` of the block placed by a right click. -/
+  selected : Nat := 0
+  /-- Number of blocks dug or placed so far. -/
+  edits : Nat := 0
   frame : Nat := 0
 
 /-- Offsets of every chunk within view of a centre chunk, nearest first. -/
@@ -69,9 +82,15 @@ def eye (g : Game) : Vec3 :=
    mix g.prevPos.y g.player.pos.y + Player.eyeHeight,
    mix g.prevPos.z g.player.pos.z⟩
 
-/-- Solidity as the simulation sees it: the world, read through the chunk cache. -/
-def solid (g : Game) (p : BlockPos) : Bool :=
-  (g.cache.blockAt g.world p).isSolid
+/-- The simulated part of the game. -/
+def state (g : Game) : State :=
+  ⟨g.world, g.player⟩
+
+/-- The view direction as a vector to the limit of the player's reach, in units. -/
+def lookVector (g : Game) : Vec3 :=
+  let (dx, dy, dz) := g.lookDir
+  let scale := State.reach.toFloat
+  ⟨(dx * scale).toInt64.toInt, (dy * scale).toInt64.toInt, (dz * scale).toInt64.toInt⟩
 
 /-- (Re)build and upload the mesh for chunk `c`. -/
 def meshChunk (g : Game) (c : ChunkPos) : IO Game := do
@@ -132,16 +151,25 @@ def unloadFar (g : Game) : IO Game := do
       cache := cache.unload c
   return { g with meshes, cache }
 
-/-- Advance the simulation by one tick. -/
-def tick (g : Game) (input : Input) : Game :=
-  { g with prevPos := g.player.pos, player := g.player.step g.solid input }
+/--
+Advance the simulation by one tick. The core decides what changes; the shell
+only mirrors a block change into the cache and rebuilds the meshes it affects.
+-/
+def tick (g : Game) (cmd : Command) : IO Game := do
+  let s := g.state
+  let next := s.step cmd
+  let mut g := { g with prevPos := g.player.pos }
+  if let some (p, b) := s.edit cmd then
+    g ← g.setBlock p b
+    g := { g with edits := g.edits + 1 }
+  return { g with world := next.world, player := next.player }
 
 /-- Turn the mouse into a view direction and handle capturing it. -/
 def look (g : Game) : IO Game := do
   let mut g := g
-  if (← mousePressed Mouse.left) && !g.captured then
-    setCursorCaptured true
-    g := { g with captured := true }
+  for i in [0:palette.size] do
+    if ← keyPressed (Key.one + i.toUInt32) then
+      g := { g with selected := i }
   if (← keyPressed Key.escape) && g.captured then
     setCursorCaptured false
     g := { g with captured := false }
@@ -150,7 +178,7 @@ def look (g : Game) : IO Game := do
     g := { g with yaw := g.yaw + (← mouseDx) * 0.003, pitch := max (-1.55) (min 1.55 pitch) }
   return g
 
-/-- Read the keyboard as the player's intent for a tick. -/
+/-- Read the keyboard as the player's movement for a tick. -/
 def readInput (g : Game) : IO Input := do
   let axis (pos neg : UInt32) : IO Float := do
     return (if ← keyDown pos then 1.0 else 0.0) - (if ← keyDown neg then 1.0 else 0.0)
@@ -174,14 +202,34 @@ def readInput (g : Game) : IO Input := do
     toggleFly := ← keyPressed Key.f
   }
 
+/--
+Read everything the player is asking for. A click while the mouse is free only
+captures it; once captured, left digs and right places.
+-/
+def readCommand (g : Game) : IO (Game × Command) := do
+  let left ← mousePressed Mouse.left
+  let right ← mousePressed Mouse.right
+  let cmd : Command := {
+    move := ← g.readInput
+    look := g.lookVector
+    dig := g.captured && left
+    place := if g.captured && right then palette[g.selected]? else none
+  }
+  if left && !g.captured then
+    setCursorCaptured true
+    return ({ g with captured := true }, cmd)
+  return (g, cmd)
+
 /-- Run as many ticks as the elapsed time calls for. -/
 def simulate (g : Game) : IO Game := do
+  let (g, cmd) ← g.readCommand
   let mut g := { g with tickDebt := min 0.25 (g.tickDebt + (← frameTime)) }
-  let mut input ← g.readInput
+  let mut cmd := cmd
   while g.tickDebt ≥ tickSeconds do
-    g := { g.tick input with tickDebt := g.tickDebt - tickSeconds }
-    -- A key press belongs to one tick only.
-    input := { input with toggleFly := false }
+    let debt := g.tickDebt - tickSeconds
+    g := { ← g.tick cmd with tickDebt := debt }
+    -- A press belongs to one tick only; held keys carry on.
+    cmd := { cmd with dig := false, place := none, move := { cmd.move with toggleFly := false } }
   return g
 
 def draw (g : Game) : IO Unit := do
@@ -201,6 +249,11 @@ def draw (g : Game) : IO Unit := do
         (Float.ofInt (16 * c.x - base.x) - ox)
         (Float.ofInt (16 * c.y - base.y) - oy)
         (Float.ofInt (16 * c.z - base.z) - oz)
+  if let some hit := g.state.target g.lookVector then
+    let b := hit.block
+    drawBoxWires
+      (Float.ofInt (b.x - base.x) - ox - 0.003) (Float.ofInt (b.y - base.y) - oy - 0.003)
+      (Float.ofInt (b.z - base.z) - oz - 0.003) 1.006 1.006 1.006 0x000000ff
   end3D
   let w ← screenWidth
   let h ← screenHeight
@@ -212,8 +265,12 @@ def draw (g : Game) : IO Unit := do
   drawText s!"block {feet.x} {feet.y} {feet.z}   {mode}   {fps} fps" 10 10 20 0xffffffff
   drawText s!"chunks {g.meshes.size} meshed, {drawn} drawn, {g.cache.chunks.size} cached"
     10 34 16 0xffffffff
+  drawText s!"placing: {blockName (palette[g.selected]?.getD .stone)}  (keys 1-{palette.size})"
+    10 54 16 0xffffffff
   unless g.captured do
-    drawText "click to capture the mouse   WASD: move   space: jump   ctrl: sprint   F: fly   esc: release"
+    drawText "click to capture the mouse   WASD: move   space: jump   ctrl: sprint   F: fly"
+      10 (h - 46) 16 0xffffffff
+    drawText "left click: dig   right click: place   1-8: choose block   esc: release the mouse"
       10 (h - 26) 16 0xffffffff
 
 end Game
@@ -266,22 +323,37 @@ def Options.parse (opts : Options := {}) : List String → Except String Options
 
 def flytestFrames : Nat := 240
 
-/-- The input the scripted tests feed the player on a given frame. -/
-def scriptedInput (opts : Options) (g : Game) : Input :=
+/--
+What the scripted tests do on a given frame: where the player looks and what
+they ask for.
+-/
+def scripted (opts : Options) (g : Game) : Game × Command :=
   if opts.flytest.isSome then
     -- Take off, then fly fast and diagonally while climbing clear of the hills.
-    { wishX := 65536, wishZ := -21845, jump := true, toggleFly := g.frame == 0 }
+    (g, { move := { wishX := 65536, wishZ := -21845, jump := true, toggleFly := g.frame == 0 } })
   else
-    -- Stand, walk forward, hop once, stop.
-    let walking := 40 ≤ g.frame && g.frame < 100
-    { wishZ := if walking then -Player.walkSpeed else 0, jump := g.frame == 70 }
+    -- Walk forward and hop; look down and dig a shaft; then look at the ground
+    -- to one side and stack blocks towards the player until the next one would
+    -- be where the player stands.
+    let f := g.frame
+    let g := if f == 100 then { g with pitch := -1.1, yaw := 0.0 } else g
+    let g := if f == 145 then { g with pitch := -0.45, yaw := 0.7 } else g
+    let walking := 40 ≤ f && f < 90
+    let dig := 110 ≤ f && f < 140 && f % 6 == 0
+    let place := if 150 ≤ f && f < 220 && f % 6 == 0 then some Block.cobble else none
+    (g, { move := { wishZ := if walking then -Player.walkSpeed else 0, jump := f == 60 }
+          look := g.lookVector, dig, place })
 
 partial def loop (g : Game) (opts : Options) : IO Unit := do
   if ← windowShouldClose then return
-  let scripted := opts.selftest.isSome || opts.flytest.isSome
+  let isScripted := opts.selftest.isSome || opts.flytest.isSome
   let mut g ← g.look
   -- Scripted runs take exactly one tick per frame so that they are repeatable.
-  g ← if scripted then pure { g.tick (scriptedInput opts g) with tickDebt := 0 } else g.simulate
+  if isScripted then
+    let (g', cmd) := scripted opts g
+    g := { ← g'.tick cmd with tickDebt := 0 }
+  else
+    g ← g.simulate
   g ← g.stream (if opts.selftest.isSome then 100000 else 6)
   if opts.selftest.isSome && g.frame == 2 then
     let mut ground := g.player.pos.blockPos
@@ -299,10 +371,10 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
     let p := g.player
     IO.println s!"frame {g.frame}: {g.meshes.size} meshed, {g.cache.chunks.size} cached, \
       feet at {p.pos.x} {p.pos.y} {p.pos.z} units, block {p.pos.blockPos.x} {p.pos.blockPos.y} \
-      {p.pos.blockPos.z}, onGround {p.onGround}, flying {p.flying}, \
-      inside something solid: {Player.blocked g.solid p.pos}"
+      {p.pos.blockPos.z}, onGround {p.onGround}, flying {p.flying}, {g.edits} blocks dug or \
+      placed, inside something solid: {Player.blocked g.world.solid p.pos}"
   match opts.selftest, opts.flytest with
-  | some path, _ => if g.frame == 130 then return ← finish path
+  | some path, _ => if g.frame == 230 then return ← finish path
   | _, some path => if g.frame == flytestFrames then return ← finish path
   | _, _ => if opts.frames == some g.frame then return ← finish ""
   endFrame

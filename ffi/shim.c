@@ -184,6 +184,14 @@ lean_obj_res lmc_unload_mesh(uint32_t id) {
     return LMC_UNIT;
 }
 
+/* Outline the box with minimum corner (x, y, z) and the given size; call in 3D mode. */
+lean_obj_res lmc_draw_box_wires(double x, double y, double z, double sx, double sy, double sz,
+                                uint32_t rgba) {
+    Vector3 centre = {(float)(x + sx / 2), (float)(y + sy / 2), (float)(z + sz / 2)};
+    DrawCubeWires(centre, (float)sx, (float)sy, (float)sz, lmc_color(rgba));
+    return LMC_UNIT;
+}
+
 /* Replace the block atlas with a width*height RGBA8 image. */
 lean_obj_res lmc_set_atlas(uint32_t width, uint32_t height, b_lean_obj_arg rgba) {
     if (lean_sarray_size(rgba) < (size_t)width * height * 4) return LMC_UNIT;

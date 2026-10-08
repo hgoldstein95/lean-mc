@@ -7,6 +7,8 @@ import LeanMc.Core.Mesh
 import LeanMc.Core.Terrain
 import LeanMc.Core.Physics
 import LeanMc.Core.Player
+import LeanMc.Core.Ray
+import LeanMc.Core.Game
 import LeanMc.Core.Generated
 import LeanMc.Shell.Atlas
 import LeanMc.Shell.Game
@@ -16,5 +18,7 @@ import LeanMc.Proofs.World
 import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
+import LeanMc.Proofs.Ray
+import LeanMc.Proofs.Game
 import LeanMc.Proofs.Generated
 import LeanMc.Proofs.Audit

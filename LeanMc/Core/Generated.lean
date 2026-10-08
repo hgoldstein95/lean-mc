@@ -1,5 +1,6 @@
 import LeanMc.Core.World
 import LeanMc.Core.Player
+import LeanMc.Core.Game
 import LeanMc.Proofs.Terrain
 
 /-!
@@ -25,5 +26,10 @@ def spawnStart (seed : UInt64) : Vec3 :=
 /-- Where a new player stands: `spawnStart`, lowered onto whatever is beneath it. -/
 def spawn (seed : UInt64) : Vec3 :=
   Player.settle (world seed).solid 16 (spawnStart seed)
+
+/-- The state a new game starts in. -/
+def initial (seed : UInt64) : State where
+  world := world seed
+  player := { pos := spawn seed }
 
 end LeanMc.Terrain

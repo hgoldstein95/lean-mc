@@ -23,12 +23,6 @@ namespace LeanMc
 
 namespace Box
 
-/-- The box and the block at `p` share some volume. -/
-def Overlaps (b : Box) (p : BlockPos) : Prop :=
-  b.lo.x < (p.x + 1) * 65536 ∧ p.x * 65536 < b.hi.x ∧
-  b.lo.y < (p.y + 1) * 65536 ∧ p.y * 65536 < b.hi.y ∧
-  b.lo.z < (p.z + 1) * 65536 ∧ p.z * 65536 < b.hi.z
-
 /-- No solid block overlaps the box. -/
 def Free (solid : BlockPos → Bool) (b : Box) : Prop :=
   ∀ p, b.Overlaps p → solid p = false
@@ -237,6 +231,30 @@ theorem settle_free {solid : BlockPos → Bool} (drop : Nat) {pos : Vec3} (h : F
     split
     · exact h
     · next hb => exact ih (blocked_eq_false_iff.mp (by simpa using hb))
+
+/-- Settling from a whole-block height above a solid floor stops above the floor. -/
+theorem settle_above_floor {solid : BlockPos → Bool} (hfloor : ∀ x z, solid ⟨x, 0, z⟩ = true)
+    (drop : Nat) {pos : Vec3} (h : 65536 ≤ pos.y) (hm : pos.y % 65536 = 0) :
+    65536 ≤ (settle solid drop pos).y := by
+  induction drop generalizing pos with
+  | zero => exact h
+  | succ drop ih =>
+    simp only [settle]
+    split
+    · exact h
+    · next hb =>
+      have hfree : Free solid (pos.add .y (-65536)) := blocked_eq_false_iff.mp (by simpa using hb)
+      have hy : (pos.add .y (-65536)).y = pos.y - 65536 := by simp [Vec3.add]; omega
+      refine ih ?_ (by omega)
+      apply Classical.byContradiction
+      intro hlt
+      have hov : (box (pos.add .y (-65536))).Overlaps
+          ⟨(pos.add .y (-65536)).x / 65536, 0, (pos.add .y (-65536)).z / 65536⟩ := by
+        simp only [Box.Overlaps, box, Vec3.add, halfWidth, height] at hy hlt ⊢
+        omega
+      have := hfree _ hov
+      rw [hfloor] at this
+      cases this
 
 /-! ## Translation invariance -/
 
