@@ -110,6 +110,19 @@ theorem generate_above (seed : UInt64) {p : BlockPos} (h : maxHeight + maxTreeHe
   have : ¬ p.y ≤ minHeight - 4 := by simp only [maxHeight, maxTreeHeight, minHeight] at h ⊢; omega
   simp [generate, generateWith, *]
 
+/-- Nothing is generated more than `maxTreeHeight` above the ground of its own column. -/
+theorem generate_above_column (seed : UInt64) {p : BlockPos}
+    (h : height seed p.x p.z + maxTreeHeight < p.y) : generate seed p = .air := by
+  have hb := height_bounds seed p.x p.z
+  simp only [minHeight, maxHeight, maxTreeHeight] at h hb
+  have h1 : ¬ p.y < 0 := by omega
+  have h2 : ¬ p.y = 0 := by omega
+  have h3 : ¬ p.y ≤ minHeight - 4 := by simp only [minHeight]; omega
+  have h4 : ¬ p.y ≤ height seed p.x p.z := by omega
+  have h5 : height seed p.x p.z + maxTreeHeight < p.y := by simp only [maxTreeHeight]; omega
+  simp only [generate, generateWith, blockWithHeight, h1, h2, h3, h4, h5, ite_false, ite_true,
+    ite_self]
+
 theorem ground_isSolid (h y : Int) : (ground h y).isSolid = true := by
   unfold ground
   repeat' split

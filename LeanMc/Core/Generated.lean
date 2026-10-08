@@ -1,4 +1,5 @@
 import LeanMc.Core.World
+import LeanMc.Core.Player
 import LeanMc.Proofs.Terrain
 
 /-!
@@ -13,5 +14,16 @@ namespace LeanMc.Terrain
 /-- The untouched world generated from `seed`. -/
 def world (seed : UInt64) : World :=
   World.newWithChunks (generate seed) (generateChunk seed) (generateChunk_get seed)
+
+/--
+Where a new player starts looking for a place to stand: the middle of the
+column at the origin, above the tallest tree that could grow there.
+-/
+def spawnStart (seed : UInt64) : Vec3 :=
+  ⟨32768, (height seed 0 0 + maxTreeHeight + 1) * 65536, 32768⟩
+
+/-- Where a new player stands: `spawnStart`, lowered onto whatever is beneath it. -/
+def spawn (seed : UInt64) : Vec3 :=
+  Player.settle (world seed).solid 16 (spawnStart seed)
 
 end LeanMc.Terrain

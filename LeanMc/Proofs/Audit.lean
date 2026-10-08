@@ -4,6 +4,7 @@ import LeanMc.Proofs.Chunk
 import LeanMc.Proofs.World
 import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
+import LeanMc.Proofs.Player
 import LeanMc.Proofs.Generated
 
 /-!
@@ -87,3 +88,19 @@ open LeanMc
   Terrain.world_chunk_get
   Terrain.world_setMany_get
   Terrain.mem_chunkFaces_cache
+
+-- Player physics
+#assert_standard_axioms
+  Box.collides_eq_false_iff
+  Player.free_between
+  Player.SafeStep.free_between
+  Player.step_reach
+  Player.step_free
+  Player.step_onGround
+  Player.step_above_floor
+  Player.step_shift
+  Player.settle_free
+  World.step_translate
+  Terrain.generate_above_column
+  Terrain.spawn_free
+  Terrain.step_above_bedrock

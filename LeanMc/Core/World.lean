@@ -45,6 +45,10 @@ def get (w : World) (p : BlockPos) : Block :=
   | some b => b
   | none => w.terrain p
 
+/-- Whether the block at `p` stops movement. -/
+def solid (w : World) (p : BlockPos) : Bool :=
+  (w.get p).isSolid
+
 def set (w : World) (p : BlockPos) (b : Block) : World :=
   { w with edits := w.edits.insert p b }
 

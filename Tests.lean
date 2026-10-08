@@ -1,6 +1,7 @@
 import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
+import LeanMc.Proofs.Player
 
 /-!
 Executable checks on the pure core, run with `lake test`. They complement the
@@ -110,5 +111,54 @@ def main : IO UInt32 := do
     meshChunk (gcache.blockAt gw) surface == meshChunk gw.get surface) && ok
 
   ok := (← check "no face is emitted twice" (faces.eraseDups.length == faces.length)) && ok
+
+  -- Player physics, in the flat world: grass top at y = 8, pillars where x and z are multiples of 8.
+  let flatSolid := (World.new Terrain.flat).solid
+  let run (solid : BlockPos → Bool) (p : Player) (n : Nat) (input : Nat → Input) : Player :=
+    (List.range n).foldl (fun p i => p.step solid (input i)) p
+  let block (n : Int) : Int := n * 65536
+  let dropped := run flatSolid { pos := ⟨block 4 + 32768, block 20, block 4 + 32768⟩ } 120 fun _ => {}
+  ok := (← check "a dropped player lands exactly on the ground" <|
+    dropped.onGround && dropped.pos.y == block 9 && dropped.vel.y == 0) && ok
+
+  let jumpPeak := (List.range 60).foldl (init := (dropped, dropped.pos.y)) fun (p, peak) i =>
+    let p := p.step flatSolid { jump := i == 0 }
+    (p, max peak p.pos.y)
+  let rise := jumpPeak.2 - block 9
+  ok := (← check s!"a jump rises about 1.25 blocks (rose {rise} units) and comes back down" <|
+    block 1 + 13107 < rise && rise < block 1 + 19661 && jumpPeak.1.onGround
+      && jumpPeak.1.pos.y == block 9) && ok
+
+  -- A pillar stands at (8, 9.., 8). Walk into it from x = 4.5.
+  let start : Player := { pos := ⟨block 4 + 32768, block 9, block 8 + 32768⟩ }
+  let walked := run flatSolid start 200 fun _ => { wishX := Player.walkSpeed }
+  ok := (← check "walking into a pillar stops flush against it" <|
+    walked.pos.x + Player.halfWidth == block 8 && walked.vel.x == 0) && ok
+
+  let rushed := run flatSolid { start with flying := true } 200 fun _ => { wishX := 65536 }
+  ok := (← check "top speed does not carry the player through a one-block pillar" <|
+    rushed.pos.x + Player.halfWidth == block 8) && ok
+
+  -- Random input, checked against the collision test every tick.
+  let noise (i : Nat) : Nat := (Terrain.mix (i.toUInt64 + 99)).toNat
+  let randomInput (i : Nat) : Input :=
+    let r := noise (i / 20)
+    { wishX := (r % 131073 : Nat) - 65536, wishZ := (r / 131073 % 131073 : Nat) - 65536,
+      jump := r / 7 % 3 == 0, descend := r / 11 % 5 == 0, toggleFly := i % 400 == 399 }
+  let gsolid := gw.solid
+  let fuzz := (List.range 6000).foldl (init := (({ pos := Terrain.spawn seed } : Player), true))
+    fun (p, fine) i =>
+      let p := p.step gsolid (randomInput i)
+      (p, fine && !Player.blocked gsolid p.pos && p.pos.y ≥ 65536)
+  let travelled := (fuzz.1.pos.x - 32768).natAbs + (fuzz.1.pos.z - 32768).natAbs
+  ok := (← check s!"6000 ticks of random input never enter a block (ended {travelled / 65536} blocks away)" <|
+    fuzz.2 && travelled > 65536) && ok
+
+  -- The flat world repeats every 120 blocks in x and z, so a shifted run must match exactly.
+  let d : BlockPos := ⟨120 * far, 0, -120 * far⟩
+  let here := run flatSolid start 600 randomInput
+  let there := run flatSolid (Player.shift start d) 600 randomInput
+  ok := (← check "the same inputs give the same motion a long way from the origin" <|
+    there.pos == here.pos.shift d && there.vel == here.vel && there.onGround == here.onGround) && ok
 
   return if ok then 0 else 1

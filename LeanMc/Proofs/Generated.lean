@@ -1,6 +1,7 @@
 import LeanMc.Core.Generated
 import LeanMc.Proofs.World
 import LeanMc.Proofs.Mesh
+import LeanMc.Proofs.Player
 
 /-!
 # Theorems about the generated world
@@ -41,4 +42,53 @@ theorem mem_chunkFaces_cache {cache : ChunkCache} {w : World} (h : cache.Valid w
   have : cache.blockAt w = w.get := funext h.blockAt_eq
   rw [this, mem_chunkFaces]
 
+/-! ## The player in the generated world -/
+
+theorem spawnStart_free (seed : UInt64) : Player.Free (world seed).solid (spawnStart seed) := by
+  intro p hp
+  obtain ⟨x, y, z⟩ := p
+  simp only [Box.Overlaps, Player.box, spawnStart, Player.halfWidth, Player.height] at hp
+  have hx : x = 0 := by omega
+  have hz : z = 0 := by omega
+  subst hx hz
+  have hy : height seed 0 0 + maxTreeHeight < y := by simp only [maxTreeHeight] at hp ⊢; omega
+  simp only [World.solid, world_get]
+  rw [generate_above_column seed (p := ⟨0, y, 0⟩) hy]
+  rfl
+
+/-- **A new player is not inside anything.** -/
+theorem spawn_free (seed : UInt64) : Player.Free (world seed).solid (spawn seed) :=
+  Player.settle_free 16 (spawnStart_free seed)
+
+/-- The generated world has a solid floor at height zero. -/
+theorem world_floor (seed : UInt64) (x z : Int) : (world seed).solid ⟨x, 0, z⟩ = true := by
+  simp [World.solid, generate_bedrock, Block.isSolid]
+
+/--
+**Nobody falls out of the world.** In the untouched generated world, a player
+whose feet are above bedrock keeps them above bedrock.
+-/
+theorem step_above_bedrock (seed : UInt64) (input : Input) {p : Player} (h : 65536 ≤ p.pos.y) :
+    65536 ≤ (Player.step (world seed).solid input p).pos.y :=
+  Player.step_above_floor (world_floor seed) input h
+
 end LeanMc.Terrain
+
+namespace LeanMc.World
+
+/--
+**Physics is the same everywhere, stated for worlds.** If one world is another
+moved by `d` blocks, then a tick in it is the tick in the other, moved by `d`.
+-/
+theorem step_translate {w w' : World} (d : BlockPos)
+    (h : ∀ p : BlockPos, w'.get ⟨p.x + d.x, p.y + d.y, p.z + d.z⟩ = w.get p)
+    (input : Input) (p : Player) :
+    Player.step w'.solid input (p.shift d) = (Player.step w.solid input p).shift d := by
+  have hs : w'.solid = Player.shiftSolid w.solid d := by
+    funext q
+    have hq : (⟨q.x - d.x + d.x, q.y - d.y + d.y, q.z - d.z + d.z⟩ : BlockPos) = q := by
+      ext <;> simp
+    simp only [World.solid, Player.shiftSolid, ← h, hq]
+  rw [hs, Player.step_shift]
+
+end LeanMc.World
