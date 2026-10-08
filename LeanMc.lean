@@ -8,6 +8,7 @@ import LeanMc.Core.Terrain
 import LeanMc.Core.Physics
 import LeanMc.Core.Player
 import LeanMc.Core.Ray
+import LeanMc.Core.Inventory
 import LeanMc.Core.Game
 import LeanMc.Core.Session
 import LeanMc.Core.Start
@@ -23,6 +24,7 @@ import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
+import LeanMc.Proofs.Inventory
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
 import LeanMc.Proofs.View

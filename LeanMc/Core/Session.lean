@@ -34,8 +34,10 @@ structure Frame where
   look : Vec3 := ⟨0, 0, 0⟩
   /-- The dig button went down during this frame. -/
   dig : Bool := false
-  /-- The place button went down during this frame, with this block selected. -/
-  place : Option Block := none
+  /-- The place button went down during this frame. -/
+  place : Bool := false
+  /-- A slot key went down during this frame. -/
+  select : Option (Fin 9) := none
   /-- The fly key went down during this frame. -/
   fly : Bool := false
   /-- How long the frame took, in time units. -/
@@ -45,17 +47,20 @@ structure Frame where
 /-- Presses that no tick has acted on yet. -/
 structure Pending where
   dig : Bool := false
-  place : Option Block := none
+  place : Bool := false
+  /-- The most recent slot chosen. -/
+  select : Option (Fin 9) := none
   /-- Whether an odd number of fly presses is waiting. Two presses cancel. -/
   fly : Bool := false
   deriving DecidableEq, Repr
 
 namespace Pending
 
-/-- Take in a frame's presses. The most recent block to place wins. -/
+/-- Take in a frame's presses. The most recent slot chosen wins. -/
 def add (p : Pending) (f : Frame) : Pending where
   dig := p.dig || f.dig
-  place := f.place <|> p.place
+  place := p.place || f.place
+  select := f.select <|> p.select
   fly := p.fly != f.fly
 
 end Pending
@@ -117,6 +122,7 @@ def firstCommand (p : Pending) (f : Frame) : Command where
   look := f.look
   dig := p.dig
   place := p.place
+  select := p.select
 
 /-- The command for any later tick of the same frame: held keys only. -/
 def heldCommand (f : Frame) : Command where
@@ -166,6 +172,10 @@ def play (s : Session) : List Frame → Session × List Command
   | f :: fs =>
     let rest := (s.frame f).play fs
     (rest.1, s.commands f ++ rest.2)
+
+/-- The slot that will be selected once waiting presses are acted on. -/
+def selectIntent (s : Session) : Fin 9 :=
+  s.pending.select.getD s.state.selected
 
 /--
 Whether the player will be flying once waiting presses are acted on: the

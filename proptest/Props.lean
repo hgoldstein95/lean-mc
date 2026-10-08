@@ -39,11 +39,26 @@ def unsoundness (start : State) (cmds : List Command) : Option String := Id.run 
       return some s!"tick {tick}: the player is below the floor"
     if next.world.get ⟨feet.x, 0, feet.z⟩ != .bedrock then
       return some s!"tick {tick}: the floor is broken"
-    if let some (p, b) := edit then
+    let kinds : List Block :=
+      [.bedrock, .stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
+    match edit with
+    | some (p, b) =>
       if next.world.get p != b then
         return some s!"tick {tick}: the edited cell does not hold the block asked for"
       if s.world.solid p && b != .air then
         return some s!"tick {tick}: a solid block was replaced"
+      if let some k := kinds.find? fun k =>
+          next.inventory.count k + (if next.world.get p == k then 1 else 0)
+            != s.inventory.count k + (if s.world.get p == k then 1 else 0) then
+        return some s!"tick {tick}: {repr k} was created or destroyed"
+    | none =>
+      if kinds.any fun k => next.inventory.count k != s.inventory.count k then
+        return some s!"tick {tick}: the inventory changed without an edit"
+    if (List.finRange 9).any fun i =>
+        match next.inventory.stack i with
+        | some stack => stack.count < 1 || stack.count > 64 || stack.block == .air
+        | none => false then
+      return some s!"tick {tick}: a stack is empty, too big or made of air"
     s := next
     tick := tick + 1
   return none
@@ -53,7 +68,7 @@ def pacingFault (start : Session) (frames : List Frame) : Option String :=
   let (final, cmds) := start.play frames
   let pressed (p : Frame → Bool) := frames.countP p
   let digs := cmds.countP (·.dig)
-  let places := cmds.countP (·.place.isSome)
+  let places := cmds.countP (·.place)
   let flips := frames.countP (·.fly)
   if final.debt ≥ unitsPerTick then some "a whole tick of time is still owed"
   else if digs + final.pending.dig.toNat > pressed (·.dig) then
@@ -61,8 +76,13 @@ def pacingFault (start : Session) (frames : List Frame) : Option String :=
   else if (pressed (·.dig) > 0) != (digs > 0 || final.pending.dig) then
     some s!"dig presses and dig commands disagree: {pressed (·.dig)} pressed, {digs} ran, \
       waiting: {final.pending.dig}"
-  else if (pressed (·.place.isSome) > 0) != (places > 0 || final.pending.place.isSome) then
+  else if (pressed (·.place) > 0) != (places > 0 || final.pending.place) then
     some "place presses and place commands disagree"
+  else if places + final.pending.place.toNat > pressed (·.place) then
+    some s!"{places} placements ran for {pressed (·.place)} presses"
+  else if final.selectIntent
+      != (frames.foldl (fun chosen f => f.select.getD chosen) start.selectIntent) then
+    some "the selected slot is not the most recent one chosen"
   else if final.flyIntent != (start.flyIntent != (flips % 2 == 1)) then
     some s!"{flips} fly presses left the fly mode wrong"
   else if cmds.length * unitsPerTick + final.debt > (frames.map (·.elapsed)).sum + start.debt then
@@ -184,8 +204,12 @@ def main (args : List String) : IO UInt32 := do
   IO.println s!"property tests: {runs} runs each, seed {seed}"
   let mut ok := true
 
+  -- Start with blocks in hand so that placing is exercised from the first tick.
+  let kit := [(Block.planks, 40), (.cobble, 70), (.sand, 3)].foldl
+    (fun inv (b, n) => (List.range n).foldl (fun inv _ => (inv.add b).getD inv) inv)
+    ({} : Inventory)
   let some flat := Session.start? Terrain.flatWorld Terrain.flatWorld_floor
-      { pos := ⟨294912, 589824, 294912⟩ }
+      { pos := ⟨294912, 589824, 294912⟩ } kit
     | IO.println "FAIL  could not start in the flat world"
       return 1
   let flatSolid := Terrain.flatWorld.solid
@@ -194,7 +218,8 @@ def main (args : List String) : IO UInt32 := do
     (do return (← elements [(2026 : UInt64), 1, 7, 99], ← listOfMaxLength 60 genCommand))
     (shrinkPair (fun _ => []) (shrinkList shrinkCommand))
     (fun (seed, cmds) => s!"seed {seed}, {showCommands cmds}")
-    (fun (seed, cmds) => pure (unsoundness (Terrain.initial seed) cmds))) && ok
+    (fun (seed, cmds) => pure (unsoundness { Terrain.initial seed with inventory := kit } cmds)))
+    && ok
 
   ok := (← holds "the flat world stays sound under any commands" runs
     (listOfMaxLength 150 genCommand) (shrinkList shrinkCommand) showCommands

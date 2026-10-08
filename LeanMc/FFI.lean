@@ -157,6 +157,10 @@ opaque setAtlas (width height : UInt32) (rgba : @& ByteArray) : IO Unit
 @[extern "lmc_draw_text"]
 opaque drawText (text : @& String) (x y size rgba : UInt32) : IO Unit
 
+/-- Draw one tile of the block atlas as a square. -/
+@[extern "lmc_draw_tile"]
+opaque drawTile (tile x y size : UInt32) : IO Unit
+
 @[extern "lmc_draw_rect"]
 opaque drawRect (x y w h rgba : UInt32) : IO Unit
 

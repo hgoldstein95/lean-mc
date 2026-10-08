@@ -20,7 +20,9 @@ def edits : List (BlockPos × Block) :=
   [(⟨3, 8, 5⟩, .air), (⟨3, 7, 5⟩, .air), (⟨15, 8, 6⟩, .air), (⟨-1, 8, -1⟩, .air),
    (⟨0, 9, 16⟩, .planks), (⟨-17, 12, 31⟩, .leaves), (⟨15, 8, 6⟩, .cobble), (⟨15, 8, 6⟩, .air)]
 
-def palette : Array Block := #[.stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
+/-- An inventory holding `n` of block `b`, as far as they fit. -/
+def carrying (b : Block) (n : Nat) : Inventory :=
+  (List.range n).foldl (fun inv _ => (inv.add b).getD inv) {}
 
 def range (lo hi : Int) : List Int :=
   (List.range (hi - lo + 1).toNat).map fun (i : Nat) => lo + Int.ofNat i
@@ -183,7 +185,7 @@ def main : IO UInt32 := do
 
   -- The game rules, in the flat world. The player stands on the grass at (4.5, 9, 4.5).
   let flatWorld := World.new Terrain.flat
-  let standing : State := ⟨flatWorld, dropped⟩
+  let standing : State := { world := flatWorld, player := dropped, inventory := carrying .cobble 3 }
   let down : Vec3 := ⟨0, -327680, 0⟩
   let dug := standing.step { look := down, dig := true }
   ok := (← check "digging removes the block being looked at and nothing else" <|
@@ -195,36 +197,71 @@ def main : IO UInt32 := do
   ok := (← check "the player then falls into the hole" <|
     fell.player.pos.y == block 8 && fell.player.onGround) && ok
 
-  let buried := standing.step { look := down, place := some .cobble }
+  ok := (← check "digging picks the block up, and only that block" <|
+    dug.inventory.count .grass == 1 && dug.inventory.count .cobble == 3
+      && dug.inventory.count .dirt == 0) && ok
+
+  let buried := standing.step { look := down, place := true }
   ok := (← check "placing where the player stands is refused" <|
-    (standing.edit { look := down, place := some .cobble }).isNone
+    (standing.edit { look := down, place := true }).isNone
+      && buried.inventory.count .cobble == 3
       && buried.world.get ⟨4, 9, 4⟩ == .air) && ok
 
   let ahead : Vec3 := ⟨196608, -150000, 0⟩
-  let placed := standing.step { look := ahead, place := some .cobble }
+  let placed := standing.step { look := ahead, place := true }
   let cell := (standing.target ahead).bind fun hit => hit.face.map hit.block.step
   ok := (← check "placing fills the empty cell in front of the targeted face" <|
     match cell with
     | some q => flatWorld.get q == .air && placed.world.get q == .cobble
     | none => false) && ok
 
+  ok := (← check "placing spends one block from the selected slot" <|
+    placed.inventory.count .cobble == 2) && ok
+
+  let empty : State := { standing with inventory := {} }
+  ok := (← check "placing with an empty slot does nothing" <|
+    (empty.edit { look := ahead, place := true }).isNone
+      && (standing.edit { look := ahead, place := true, select := some 5 }).isNone) && ok
+
+  -- Fill every slot with a full stack of stone; there is then no room for grass.
+  let full : State := { standing with inventory := carrying .stone (9 * 64) }
+  ok := (← check "a full inventory holds nine stacks of 64 and refuses to dig" <|
+    full.inventory.count .stone == 576 && (carrying .stone 1000).count .stone == 576
+      && (List.finRange 9).all (fun i => (full.inventory.stack i).map (·.count) == some 64)
+      && (full.edit { look := down, dig := true }).isNone
+      && (full.step { look := down, dig := true }).world.get ⟨4, 8, 4⟩ == .grass) && ok
+
+  let mixed := (carrying .stone 70).add .dirt |>.bind (·.add .stone)
+  ok := (← check "a stack rolls over at 64 and later blocks join the open stack" <|
+    match mixed with
+    | some inv =>
+      (inv.stack 0).map (·.count) == some 64 && (inv.stack 1).map (·.count) == some 7
+        && (inv.stack 2).map (·.block) == some .dirt && inv.count .stone == 71
+    | none => false) && ok
+
   -- Clear a shaft down to bedrock and stand in it.
   let shaft := (List.range 8).foldl (fun w (i : Nat) => w.set ⟨4, 1 + (i : Int), 4⟩ .air) flatWorld
-  let atBottom : State := ⟨shaft, { pos := ⟨block 4 + 32768, block 1, block 4 + 32768⟩ }⟩
+  let atBottom : State :=
+    { world := shaft, player := { pos := ⟨block 4 + 32768, block 1, block 4 + 32768⟩ } }
   ok := (← check "bedrock cannot be dug" <|
     atBottom.target down == some ⟨⟨4, 0, 4⟩, some .yp⟩
       && (atBottom.step { look := down, dig := true }).world.get ⟨4, 0, 4⟩ == .bedrock) && ok
 
-  let high : State := ⟨flatWorld, { pos := ⟨block 4 + 32768, block 20, block 4 + 32768⟩, flying := true }⟩
+  let high : State :=
+    { world := flatWorld
+      player := { pos := ⟨block 4 + 32768, block 20, block 4 + 32768⟩, flying := true } }
   ok := (← check "a block out of reach is not targeted, however long the look vector" <|
     (high.target ⟨0, -block 1000, 0⟩).isNone) && ok
 
   -- Random play in the generated world, checked every tick.
+  let kinds : List Block :=
+    [.bedrock, .stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
   let randomCommand (i : Nat) : Command :=
     let r := noise (i + 77777)
     let part (k : Nat) : Int := ((r / k % 655361 : Nat) : Int) - 327680
     { move := randomInput i, look := ⟨part 3, part 5 - 150000, part 9⟩,
-      dig := r % 4 == 0, place := if r % 4 == 1 then palette[r / 31 % 8]? else none }
+      dig := r % 4 == 0, place := r % 4 == 1
+      select := if r % 7 == 0 then some ⟨r / 31 % 9, Nat.mod_lt _ (by decide)⟩ else none }
   let play := (List.range 5000).foldl (init := (Terrain.initial seed, true, 0))
     fun (s, fine, edits) i =>
       let cmd := randomCommand i
@@ -234,11 +271,21 @@ def main : IO UInt32 := do
       let fine := fine && !Player.blocked next.world.solid next.player.pos
         && next.player.pos.y ≥ 65536 && next.world.get ⟨feet.x, 0, feet.z⟩ == .bedrock
         && (match edit with
-            | some (q, b) => next.world.get q == b
-            | none => true)
+            | some (q, b) =>
+              -- The edit took effect, and every kind of block is conserved across it.
+              next.world.get q == b && kinds.all fun k =>
+                next.inventory.count k + (if next.world.get q == k then 1 else 0)
+                  == s.inventory.count k + (if s.world.get q == k then 1 else 0)
+            | none => kinds.all fun k => next.inventory.count k == s.inventory.count k)
+        && (List.finRange 9).all fun i =>
+            match next.inventory.stack i with
+            | some stack => 1 ≤ stack.count && stack.count ≤ 64 && stack.block != .air
+            | none => true
       (next, fine, edits + (if edit.isSome then 1 else 0))
-  ok := (← check s!"5000 ticks of random digging, placing and moving stay sound \
-      ({play.2.2} blocks changed)" (play.2.1 && play.2.2 > 100)) && ok
+  let carried := (kinds.map play.1.inventory.count).sum
+  ok := (← check s!"5000 ticks of random digging, placing and moving stay sound and conserve \
+      blocks ({play.2.2} blocks changed, {carried} carried at the end)"
+    (play.2.1 && play.2.2 > 100)) && ok
 
   -- Pacing: frames a quarter of a tick long, so three in four run no tick.
   let quiet : Frame := { look := down, elapsed := 250 }

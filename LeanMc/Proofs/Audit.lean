@@ -6,6 +6,7 @@ import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
+import LeanMc.Proofs.Inventory
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
 import LeanMc.Proofs.View
@@ -126,6 +127,10 @@ open LeanMc
   State.step_changes_at_most_one
   State.step_solid_unchanged_or_air
   State.step_bedrock
+  State.change_cases
+  State.step_conserves_cell
+  State.step_conserves
+  State.step_noAir
   State.step_free
   State.Sound.step
   State.Sound.run
@@ -146,6 +151,7 @@ open LeanMc
   Session.play_dig_count
   Session.play_place_iff
   Session.frame_flyIntent
+  Session.frame_selectIntent
   Session.play_sound
   Terrain.session_sound
   Terrain.flatWorld_floor
@@ -180,3 +186,11 @@ open LeanMc
   Renderer.Synced.draw
   Renderer.Synced.scene_sound
   Renderer.Synced.scene_complete
+
+-- Inventory
+#assert_standard_axioms
+  Stack.count_bounds
+  Inventory.count_add
+  Inventory.count_take
+  Inventory.NoAir.add
+  Inventory.NoAir.take

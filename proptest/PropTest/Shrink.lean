@@ -49,20 +49,23 @@ def shrinkInput (i : Input) : List Input :=
     ++ (shrinkInt i.wishX).map (fun x => { i with wishX := x })
     ++ (shrinkInt i.wishZ).map (fun z => { i with wishZ := z })
 
-def shrinkPlace : Option Block → List (Option Block)
+/-- A slot key press shrinks to no press, then towards the first slot. -/
+def shrinkSelect : Option (Fin 9) → List (Option (Fin 9))
   | none => []
-  | some b => none :: (shrinkBlock b).map some
+  | some i => none :: (if i = 0 then [] else [some 0])
 
 def shrinkCommand (c : Command) : List Command :=
   (if c.dig then [{ c with dig := false }] else [])
-    ++ (shrinkPlace c.place).map (fun place => { c with place })
+    ++ (if c.place then [{ c with place := false }] else [])
+    ++ (shrinkSelect c.select).map (fun select => { c with select })
     ++ (shrinkInput c.move).map (fun move => { c with move })
     ++ (shrinkVec3 c.look).map (fun look => { c with look })
 
 def shrinkFrame (f : Frame) : List Frame :=
   (if f.dig then [{ f with dig := false }] else [])
     ++ (if f.fly then [{ f with fly := false }] else [])
-    ++ (shrinkPlace f.place).map (fun place => { f with place })
+    ++ (if f.place then [{ f with place := false }] else [])
+    ++ (shrinkSelect f.select).map (fun select => { f with select })
     ++ (shrinkElapsed f.elapsed).map (fun elapsed => { f with elapsed })
     ++ (shrinkInput f.move).map (fun move => { f with move })
     ++ (shrinkVec3 f.look).map (fun look => { f with look })

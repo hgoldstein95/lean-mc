@@ -68,15 +68,19 @@ def genBlock : G Block :=
     (1, fun _ => elements [Block.bedrock, .air])
   ] (by simp)
 
+/-- A slot key press: usually none, otherwise any of the nine slots. -/
+def genSelect : G (Option (Fin 9)) := do
+  let pressed ← chance 15
+  let i ← chooseNat 0 8
+  return if pressed then some ⟨i % 9, Nat.mod_lt _ (by decide)⟩ else none
+
 def genCommand : G Command := do
-  let dig ← chance 30
-  let placing ← chance 30
-  let block ← genBlock
   return {
     move := ← genInput
     look := ← genLook
-    dig
-    place := if placing then some block else none }
+    dig := ← chance 35
+    place := ← chance 35
+    select := ← genSelect }
 
 /--
 How long a frame took, in units of 1/60000 s. A tick is 1000. Most of the
@@ -93,13 +97,12 @@ def genElapsed : G Nat :=
   ] (by simp)
 
 def genFrame : G Frame := do
-  let placing ← chance 20
-  let block ← genBlock
   return {
     move := ← genInput
     look := ← genLook
     dig := ← chance 20
-    place := if placing then some block else none
+    place := ← chance 20
+    select := ← genSelect
     fly := ← chance 8
     elapsed := ← genElapsed }
 

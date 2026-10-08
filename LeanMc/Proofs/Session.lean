@@ -64,13 +64,13 @@ theorem length_commands (s : Session) (f : Frame) : (s.commands f).length = s.ti
 
 /-- Only the first tick of a frame can carry a press; the rest carry held keys alone. -/
 theorem tail_commands (s : Session) (f : Frame) {c : Command} (hc : c ∈ (s.commands f).tail) :
-    c.dig = false ∧ c.place = none ∧ c.move.toggleFly = false := by
+    c.dig = false ∧ c.place = false ∧ c.select = none ∧ c.move.toggleFly = false := by
   cases h : s.ticksDue f with
   | zero => simp [(commands_of_no_tick h).1] at hc
   | succ n =>
     simp only [(commands_of_tick h).1, List.tail_cons] at hc
     rw [List.eq_of_mem_replicate hc]
-    exact ⟨rfl, rfl, rfl⟩
+    exact ⟨rfl, rfl, rfl, rfl⟩
 
 /-- **A press waits for at most one tick**: once a tick's worth of time is owed, nothing is left waiting. -/
 theorem frame_pending_cleared {s : Session} {f : Frame}
@@ -136,16 +136,12 @@ theorem frame_dig_count (s : Session) (f : Frame) :
     cases s.pending.dig <;> cases f.dig <;> simp
 
 theorem frame_place_iff (s : Session) (f : Frame) :
-    (s.pending.place.isSome = true ∨ f.place.isSome = true) ↔
-      ((s.frame f).pending.place.isSome = true ∨ ∃ c ∈ s.commands f, c.place.isSome = true) := by
+    (s.pending.place = true ∨ f.place = true) ↔
+      ((s.frame f).pending.place = true ∨ ∃ c ∈ s.commands f, c.place = true) := by
   cases h : s.ticksDue f with
-  | zero =>
-    simp only [(commands_of_no_tick h).1, (commands_of_no_tick h).2, Pending.add]
-    cases f.place <;> simp
+  | zero => simp [(commands_of_no_tick h).1, (commands_of_no_tick h).2, Pending.add]
   | succ n =>
-    simp only [(commands_of_tick h).1, (commands_of_tick h).2, Pending.add, firstCommand,
-      heldCommand]
-    cases f.place <;> simp
+    simp [(commands_of_tick h).1, (commands_of_tick h).2, Pending.add, firstCommand, heldCommand]
 
 /-! ## Presses, over any sequence of frames -/
 
@@ -233,9 +229,8 @@ theorem play_dig_count (s : Session) (fs : List Frame) :
 
 /-- **No placement is lost or invented**, in the same sense as for digging. -/
 theorem play_place_iff (s : Session) (fs : List Frame) :
-    (s.pending.place.isSome = true ∨ ∃ f ∈ fs, f.place.isSome = true) ↔
-      ((s.play fs).1.pending.place.isSome = true
-        ∨ ∃ c ∈ (s.play fs).2, c.place.isSome = true) := by
+    (s.pending.place = true ∨ ∃ f ∈ fs, f.place = true) ↔
+      ((s.play fs).1.pending.place = true ∨ ∃ c ∈ (s.play fs).2, c.place = true) := by
   induction fs generalizing s with
   | nil => simp [play]
   | cons f fs ih =>
@@ -271,6 +266,40 @@ theorem play_place_iff (s : Session) (fs : List Frame) :
           · exact .inl h
           · exact .inr (.inl h)
         · exact .inr (.inr h)
+
+/-! ## Choosing a slot -/
+
+theorem run_held_selected (s : State) (f : Frame) (n : Nat) :
+    (s.run (List.replicate n (heldCommand f))).selected = s.selected := by
+  induction n generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    simp only [List.replicate_succ, State.run, List.foldl_cons]
+    have := ih (s.step (heldCommand f))
+    simp only [State.run] at this
+    rw [this, State.step_selected]
+    rfl
+
+/--
+**The most recent slot chosen is the one selected.** Counting a waiting choice
+as already made, a frame leaves the selection alone unless a slot key went down
+in it, and then selects that slot, however many ticks the frame runs.
+-/
+theorem frame_selectIntent (s : Session) (f : Frame) :
+    (s.frame f).selectIntent = f.select.getD s.selectIntent := by
+  cases h : s.ticksDue f with
+  | zero =>
+    simp only [selectIntent, frame, pendingAfter, h, (commands_of_no_tick h).1, Pending.add,
+      State.run, List.foldl_nil, ↓reduceIte]
+    cases f.select <;> rfl
+  | succ n =>
+    have hrun : (s.state.run (s.commands f)).selected = (s.pending.add f).select.getD s.state.selected := by
+      rw [(commands_of_tick h).1]
+      show ((s.state.step _).run _).selected = _
+      rw [run_held_selected, State.step_selected]
+      rfl
+    simp only [selectIntent, frame, pendingAfter, h, hrun, Pending.add]
+    cases f.select <;> rfl
 
 /-! ## The fly key -/
 

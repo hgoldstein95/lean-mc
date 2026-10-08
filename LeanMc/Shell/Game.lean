@@ -26,9 +26,6 @@ open FFI
 /-- How far chunks are kept loaded around the player. -/
 def view : ViewRange := ⟨6, 4⟩
 
-/-- Blocks the number keys select for placing. -/
-def palette : Array Block := #[.stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
-
 def blockName : Block → String
   | .air => "air" | .bedrock => "bedrock" | .stone => "stone" | .dirt => "dirt"
   | .grass => "grass" | .sand => "sand" | .log => "log" | .leaves => "leaves"
@@ -44,8 +41,6 @@ structure Game where
   yaw : Float := 0.0
   pitch : Float := 0.0
   captured : Bool := false
-  /-- Index into `palette` of the block placed by a right click. -/
-  selected : Nat := 0
   /-- Number of blocks dug or placed so far. -/
   edits : Nat := 0
   /-- Number of ticks simulated so far. -/
@@ -162,9 +157,6 @@ def advance (g : Game) (frame : Frame) : IO Game := do
 /-- Turn the mouse into a view direction and handle capturing it. -/
 def look (g : Game) : IO Game := do
   let mut g := g
-  for i in [0:palette.size] do
-    if ← keyPressed (Key.one + i.toUInt32) then
-      g := { g with selected := i }
   if (← keyPressed Key.escape) && g.captured then
     setCursorCaptured false
     g := { g with captured := false }
@@ -208,7 +200,13 @@ def readFrame (g : Game) : IO (Game × Frame) := do
     move := ← g.readInput
     look := g.lookVector
     dig := g.captured && left
-    place := if g.captured && right then palette[g.selected]? else none
+    place := g.captured && right
+    select := ← do
+      let mut chosen : Option (Fin 9) := none
+      for i in List.finRange 9 do
+        if ← keyPressed (Key.one + i.val.toUInt32) then
+          chosen := some i
+      pure chosen
     fly := ← keyPressed Key.f
     elapsed := (seconds * (unitsPerTick * ticksPerSecond).toFloat).toUInt64.toNat
   }
@@ -242,12 +240,24 @@ def draw (g : Game) : IO Unit := do
   drawText s!"chunks {g.renderer.slots.size} meshed, {drawn} drawn, \
       {g.renderer.cache.chunks.size} cached"
     10 34 16 0xffffffff
-  drawText s!"placing: {blockName (palette[g.selected]?.getD .stone)}  (keys 1-{palette.size})"
-    10 54 16 0xffffffff
+  -- The hotbar: nine slots along the bottom, the selected one outlined.
+  let slot : UInt32 := 44
+  let left := w / 2 - slot * 9 / 2
+  let top := h - slot - 60
+  for i in List.finRange 9 do
+    let x := left + i.val.toUInt32 * slot
+    let chosen := i == g.state.selected
+    drawRect x top slot slot (if chosen then 0xffffffff else 0x00000080)
+    drawRect (x + 2) (top + 2) (slot - 4) (slot - 4) 0x30303080
+    if let some stack := g.state.inventory.stack i then
+      drawTile (stack.block.tile .xp).toUInt32 (x + 6) (top + 6) (slot - 12)
+      drawText s!"{stack.count}" (x + 5) (top + slot - 19) 16 0xffffffff
+  if let some stack := g.state.inventory.stack g.state.selected then
+    drawText (blockName stack.block) left (top - 22) 16 0xffffffff
   unless g.captured do
     drawText "click to capture the mouse   WASD: move   space: jump   ctrl: sprint   F: fly"
       10 (h - 46) 16 0xffffffff
-    drawText "left click: dig   right click: place   1-8: choose block   esc: release the mouse"
+    drawText "left click: dig   right click: place   1-9: choose slot   esc: release the mouse"
       10 (h - 26) 16 0xffffffff
 
 end Game
@@ -314,14 +324,13 @@ def scripted (opts : Options) (g : Game) : Game × Frame :=
           elapsed := unitsPerTick })
   else
     -- Walk forward and hop; look down and dig a shaft; then look at the ground
-    -- to one side and stack blocks towards the player until the next one would
-    -- be where the player stands.
+    -- to one side and put three of the four blocks just dug back down.
     let f := g.frame
     let g := if f == 100 then { g with pitch := -1.1, yaw := 0.0 } else g
     let g := if f == 145 then { g with pitch := -0.45, yaw := 0.7 } else g
     let walking := 40 ≤ f && f < 90
     let dig := 110 ≤ f && f < 140 && f % 6 == 0
-    let place := if 150 ≤ f && f < 220 && f % 6 == 0 then some Block.cobble else none
+    let place := 150 ≤ f && f < 165 && f % 6 == 0
     (g, { move := { wishZ := if walking then -Player.walkSpeed else 0, jump := f == 60 }
           look := g.lookVector, dig, place, elapsed := unitsPerTick })
 
@@ -355,7 +364,9 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
       {g.renderer.cache.chunks.size} cached, shim faults: {← debugFault}, \
       feet at {p.pos.x} {p.pos.y} {p.pos.z} units, block {p.pos.blockPos.x} {p.pos.blockPos.y} \
       {p.pos.blockPos.z}, onGround {p.onGround}, flying {p.flying}, {g.edits} blocks dug or \
-      placed, {g.ticks} ticks, inside something solid: {Player.blocked g.world.solid p.pos}"
+      placed, carrying {(List.finRange 9).filterMap fun i =>
+        (g.state.inventory.stack i).map fun s => s!"{s.count} {blockName s.block}"}, \
+      {g.ticks} ticks, inside something solid: {Player.blocked g.world.solid p.pos}"
   match opts.selftest, opts.flytest with
   | some path, _ => if g.frame == 230 then return ← finish path
   | _, some path => if g.frame == flytestFrames then return ← finish path
@@ -403,7 +414,7 @@ def inputTest (g : Game) : IO UInt32 := do
     | none => false) && ok
   g := { g with pitch := -0.45, yaw := 0.7 }
   let before := g.edits
-  g ← press g { place := some .cobble }
+  g ← press g { place := true }
   ok := (← report "a place pressed between ticks still places" (g.edits == before + 1)) && ok
   g ← press g { fly := true }
   ok := (← report "a fly toggle pressed between ticks still toggles" g.player.flying) && ok

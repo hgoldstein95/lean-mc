@@ -327,6 +327,16 @@ lean_obj_res lmc_draw_text(b_lean_obj_arg text, uint32_t x, uint32_t y, uint32_t
     return LMC_UNIT;
 }
 
+/* Draw one tile of the block atlas as a square, for the hotbar. */
+lean_obj_res lmc_draw_tile(uint32_t tile, uint32_t x, uint32_t y, uint32_t size) {
+    if (!g_has_atlas) return LMC_UNIT;
+    float t = (float)g_atlas.width / LMC_ATLAS_TILES;
+    Rectangle src = {(float)(tile % 16) * t, (float)(tile / 16) * t, t, t};
+    Rectangle dst = {(float)x, (float)y, (float)size, (float)size};
+    DrawTexturePro(g_atlas, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
+    return LMC_UNIT;
+}
+
 lean_obj_res lmc_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgba) {
     DrawRectangle((int)x, (int)y, (int)w, (int)h, lmc_color(rgba));
     return LMC_UNIT;

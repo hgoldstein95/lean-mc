@@ -79,6 +79,7 @@ theorem step_above_bedrock (seed : UInt64) (input : Input) {p : Player} (h : 655
 theorem initial_sound (seed : UInt64) : (initial seed).Sound where
   free := spawn_free seed
   floor x z := by simp [initial, generate_bedrock]
+  items := Inventory.noAir_empty
   above := by
     have hb := height_bounds seed 0 0
     refine Player.settle_above_floor (world_floor seed) 16 ?_ ?_ <;>
