@@ -7,6 +7,7 @@ import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
 import LeanMc.Proofs.Game
+import LeanMc.Proofs.Session
 import LeanMc.Proofs.Generated
 
 /-!
@@ -126,3 +127,20 @@ open LeanMc
   State.Sound.run
   Terrain.initial_sound
   Terrain.play_sound
+
+-- Pacing: frames, ticks and input
+#assert_standard_axioms
+  State.runLog_state
+  Session.frameLog_fst
+  Session.tail_commands
+  Session.frame_pending_cleared
+  Session.debt_lt
+  Session.time_not_invented
+  Session.time_accounted
+  Session.play_state
+  Session.play_dig_iff
+  Session.play_dig_count
+  Session.play_place_iff
+  Session.frame_flyIntent
+  Session.play_sound
+  Terrain.session_sound

@@ -1,6 +1,7 @@
 import LeanMc.Core.World
 import LeanMc.Core.Player
 import LeanMc.Core.Game
+import LeanMc.Core.Session
 import LeanMc.Proofs.Terrain
 
 /-!
@@ -31,5 +32,9 @@ def spawn (seed : UInt64) : Vec3 :=
 def initial (seed : UInt64) : State where
   world := world seed
   player := { pos := spawn seed }
+
+/-- The session a new game starts in: the initial state, nothing waiting, no time owed. -/
+def session (seed : UInt64) : Session where
+  state := initial seed
 
 end LeanMc.Terrain

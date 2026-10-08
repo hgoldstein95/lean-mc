@@ -2,7 +2,7 @@ import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
 import LeanMc.Proofs.Player
-import LeanMc.Core.Game
+import LeanMc.Core.Session
 
 /-!
 Executable checks on the pure core, run with `lake test`. They complement the
@@ -238,5 +238,28 @@ def main : IO UInt32 := do
       (next, fine, edits + (if edit.isSome then 1 else 0))
   ok := (← check s!"5000 ticks of random digging, placing and moving stay sound \
       ({play.2.2} blocks changed)" (play.2.1 && play.2.2 > 100)) && ok
+
+  -- Pacing: frames a quarter of a tick long, so three in four run no tick.
+  let quiet : Frame := { look := down, elapsed := 250 }
+  let fresh : Session := { state := standing }
+  let digs (cmds : List Command) : Nat := cmds.countP (·.dig)
+  let between := fresh.play [quiet, { quiet with dig := true }, quiet, quiet, quiet, quiet]
+  ok := (← check "a dig pressed on a frame with no tick is run by the next tick, once" <|
+    (fresh.frame quiet).state.player.pos == standing.player.pos
+      && digs between.2 == 1 && between.2.length == 1 && !between.1.pending.dig
+      && between.1.state.world.get ⟨4, 8, 4⟩ == .air) && ok
+
+  let long := fresh.play [{ look := down, dig := true, elapsed := 5300 }]
+  ok := (← check "a long frame runs several ticks but digs once" <|
+    long.2.length == 5 && digs long.2 == 1 && long.1.debt == 300) && ok
+
+  let twice := fresh.play [{ quiet with fly := true }, { quiet with fly := true }, quiet, quiet]
+  let once := fresh.play [{ quiet with fly := true }, quiet, quiet, quiet]
+  ok := (← check "one fly press toggles flying and two cancel" <|
+    once.1.state.player.flying && !twice.1.state.player.flying) && ok
+
+  let stalled := fresh.frame { elapsed := 1000000 }
+  ok := (← check "a stalled frame runs a bounded number of ticks and owes nothing after" <|
+    (fresh.commands { elapsed := 1000000 }).length == maxTicksPerFrame && stalled.debt == 0) && ok
 
   return if ok then 0 else 1

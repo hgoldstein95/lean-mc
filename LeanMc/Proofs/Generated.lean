@@ -3,6 +3,7 @@ import LeanMc.Proofs.World
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
 import LeanMc.Proofs.Game
+import LeanMc.Proofs.Session
 
 /-!
 # Theorems about the generated world
@@ -91,6 +92,15 @@ bedrock floor is never broken, and the player never falls through it.
 -/
 theorem play_sound (seed : UInt64) (cmds : List Command) : ((initial seed).run cmds).Sound :=
   (initial_sound seed).run cmds
+
+/--
+**The game never goes wrong, frame by frame.** The same guarantee for the game
+as it is actually driven: whatever frames arrive, at whatever rate and with
+whatever input, the state stays sound.
+-/
+theorem session_sound (seed : UInt64) (frames : List Frame) :
+    ((session seed).play frames).1.state.Sound :=
+  Session.play_sound (initial_sound seed) frames
 
 end LeanMc.Terrain
 

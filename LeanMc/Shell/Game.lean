@@ -2,7 +2,7 @@ import LeanMc.FFI
 import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Generated
-import LeanMc.Core.Game
+import LeanMc.Core.Session
 import LeanMc.Shell.Atlas
 
 /-!
@@ -25,9 +25,6 @@ open FFI
 def viewRadius : Int := 6
 def viewRadiusY : Int := 4
 
-/-- Seconds per simulation tick. -/
-def tickSeconds : Float := 1.0 / ticksPerSecond.toFloat
-
 /-- Blocks the number keys select for placing. -/
 def palette : Array Block := #[.stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
 
@@ -37,28 +34,22 @@ def blockName : Block → String
   | .planks => "planks" | .cobble => "cobble"
 
 structure Game where
-  world : World
+  /-- The simulated game and the bookkeeping that paces it; all of it lives in the core. -/
+  session : Session
   cache : ChunkCache := {}
   /-- Uploaded mesh for each meshed chunk; handle `0` is an empty mesh. -/
   meshes : Std.HashMap ChunkPos UInt32 := {}
-  player : Player
   /-- Where the player was one tick ago, so that drawing can blend between ticks. -/
   prevPos : Vec3
   yaw : Float := 0.0
   pitch : Float := 0.0
-  /-- Simulated time not yet turned into ticks, in seconds. -/
-  tickDebt : Float := 0.0
   captured : Bool := false
   /-- Index into `palette` of the block placed by a right click. -/
   selected : Nat := 0
   /-- Number of blocks dug or placed so far. -/
   edits : Nat := 0
-  /-- Number of ticks simulated in normal play. -/
+  /-- Number of ticks simulated so far. -/
   ticks : Nat := 0
-  /-- Presses that no tick has acted on yet. Frames can come faster than ticks. -/
-  pendingDig : Bool := false
-  pendingPlace : Bool := false
-  pendingFly : Bool := false
   frame : Nat := 0
 
 /-- Offsets of every chunk within view of a centre chunk, nearest first. -/
@@ -73,6 +64,10 @@ def chunkOffsets : Array (Int × Int × Int) := Id.run do
 
 namespace Game
 
+def state (g : Game) : State := g.session.state
+def world (g : Game) : World := g.session.state.world
+def player (g : Game) : Player := g.session.state.player
+
 /-- Unit vector the player looks along. Yaw `0` faces `-z`. -/
 def lookDir (g : Game) : Float × Float × Float :=
   (g.yaw.sin * g.pitch.cos, g.pitch.sin, -(g.yaw.cos * g.pitch.cos))
@@ -82,15 +77,11 @@ The eye position to draw from, in fixed-point units: the player's eyes, blended
 between the last two ticks by how far into the current tick the frame falls.
 -/
 def eye (g : Game) : Vec3 :=
-  let blend : Int := (max 0.0 (min 1.0 (g.tickDebt / tickSeconds)) * 1024.0).toInt64.toInt
+  let blend : Int := (min g.session.debt unitsPerTick * 1024 / unitsPerTick : Nat)
   let mix (a b : Int) : Int := a + (b - a) * blend / 1024
   ⟨mix g.prevPos.x g.player.pos.x,
    mix g.prevPos.y g.player.pos.y + Player.eyeHeight,
    mix g.prevPos.z g.player.pos.z⟩
-
-/-- The simulated part of the game. -/
-def state (g : Game) : State :=
-  ⟨g.world, g.player⟩
 
 /-- The view direction as a vector to the limit of the player's reach, in units. -/
 def lookVector (g : Game) : Vec3 :=
@@ -110,12 +101,12 @@ def meshChunk (g : Game) (c : ChunkPos) : IO Game := do
   return { g with cache, meshes := g.meshes.insert c mesh }
 
 /--
-Change one block, keeping the cache and the affected meshes up to date. Only
-the chunk holding the block and the chunks holding its neighbours can change
-(`LeanMc.meshChunk_set`), so only those are rebuilt.
+Bring the cache and meshes up to date with a block change the world has
+already had. Only the chunk holding the block and the chunks holding its
+neighbours can change (`LeanMc.meshChunk_set`), so only those are rebuilt.
 -/
-def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
-  let mut g := { g with world := g.world.set p b, cache := g.cache.setBlock p b }
+def mirrorEdit (g : Game) (p : BlockPos) (b : Block) : IO Game := do
+  let mut g := { g with cache := g.cache.setBlock p b }
   let mut dirty := [p.chunkPos]
   for d in Dir.all do
     let c := (p.step d).chunkPos
@@ -125,6 +116,11 @@ def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
     if g.meshes.contains c then
       g ← g.meshChunk c
   return g
+
+/-- Change one block directly, outside the simulation. Used to set up test scenes. -/
+def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
+  let state := { g.session.state with world := g.world.set p b }
+  mirrorEdit { g with session := { g.session with state } } p b
 
 /-- Mesh missing chunks around the player, nearest first, for up to `budgetMs`. -/
 def stream (g : Game) (budgetMs : Nat) : IO Game := do
@@ -158,17 +154,21 @@ def unloadFar (g : Game) : IO Game := do
   return { g with meshes, cache }
 
 /--
-Advance the simulation by one tick. The core decides what changes; the shell
-only mirrors a block change into the cache and rebuilds the meshes it affects.
+Advance the simulation by one frame. The core decides how many ticks run, what
+each is told and what changes; the shell only mirrors block changes into the
+cache and rebuilds the meshes they affect.
 -/
-def tick (g : Game) (cmd : Command) : IO Game := do
-  let s := g.state
-  let next := s.step cmd
-  let mut g := { g with prevPos := g.player.pos }
-  if let some (p, b) := s.edit cmd then
-    g ← g.setBlock p b
-    g := { g with edits := g.edits + 1 }
-  return { g with world := next.world, player := next.player }
+def advance (g : Game) (frame : Frame) : IO Game := do
+  let ran := g.session.ticksDue frame
+  let (session, log) := g.session.frameLog frame
+  let mut g := { g with
+    session
+    prevPos := log.before.getD g.prevPos
+    ticks := g.ticks + ran
+    edits := g.edits + log.edits.size }
+  for (p, b) in log.edits do
+    g ← g.mirrorEdit p b
+  return g
 
 /-- Turn the mouse into a view direction and handle capturing it. -/
 def look (g : Game) : IO Game := do
@@ -207,62 +207,26 @@ def readInput (g : Game) : IO Input := do
     descend := ← keyDown Key.leftShift
   }
 
-/-- What the keyboard and mouse reported during one frame. -/
-structure Events where
-  /-- Movement keys currently held. -/
-  move : Input := {}
-  /-- The dig button went down during this frame. -/
-  dig : Bool := false
-  /-- The place button went down during this frame. -/
-  place : Bool := false
-  /-- The fly key went down during this frame. -/
-  fly : Bool := false
-  /-- How long the frame took. -/
-  seconds : Float := 0.0
-
 /--
 Read this frame's input. A click while the mouse is free only captures it;
 once captured, left digs and right places.
 -/
-def readEvents (g : Game) : IO (Game × Events) := do
+def readFrame (g : Game) : IO (Game × Frame) := do
   let left ← mousePressed Mouse.left
   let right ← mousePressed Mouse.right
-  let events : Events := {
+  let seconds := min 0.25 (← frameTime)
+  let frame : Frame := {
     move := ← g.readInput
+    look := g.lookVector
     dig := g.captured && left
-    place := g.captured && right
+    place := if g.captured && right then palette[g.selected]? else none
     fly := ← keyPressed Key.f
-    seconds := ← frameTime
+    elapsed := (seconds * (unitsPerTick * ticksPerSecond).toFloat).toUInt64.toNat
   }
   if left && !g.captured then
     setCursorCaptured true
-    return ({ g with captured := true }, events)
-  return (g, events)
-
-/--
-Run as many ticks as the elapsed time calls for.
-
-A frame may run no tick at all, so a press is remembered until a tick acts on
-it, and then acted on once. Held keys apply to every tick.
--/
-def simulate (g : Game) (events : Events) : IO Game := do
-  let mut g := { g with
-    tickDebt := min 0.25 (g.tickDebt + events.seconds)
-    pendingDig := g.pendingDig || events.dig
-    pendingPlace := g.pendingPlace || events.place
-    pendingFly := g.pendingFly || events.fly }
-  while g.tickDebt ≥ tickSeconds do
-    let cmd : Command := {
-      move := { events.move with toggleFly := g.pendingFly }
-      look := g.lookVector
-      dig := g.pendingDig
-      place := if g.pendingPlace then palette[g.selected]? else none
-    }
-    let debt := g.tickDebt - tickSeconds
-    g := { ← g.tick cmd with
-      tickDebt := debt, ticks := g.ticks + 1
-      pendingDig := false, pendingPlace := false, pendingFly := false }
-  return g
+    return ({ g with captured := true }, frame)
+  return (g, frame)
 
 def draw (g : Game) : IO Unit := do
   let eye := g.eye
@@ -362,10 +326,11 @@ def flytestFrames : Nat := 240
 What the scripted tests do on a given frame: where the player looks and what
 they ask for.
 -/
-def scripted (opts : Options) (g : Game) : Game × Command :=
+def scripted (opts : Options) (g : Game) : Game × Frame :=
   if opts.flytest.isSome then
     -- Take off, then fly fast and diagonally while climbing clear of the hills.
-    (g, { move := { wishX := 65536, wishZ := -21845, jump := true, toggleFly := g.frame == 0 } })
+    (g, { move := { wishX := 65536, wishZ := -21845, jump := true }, fly := g.frame == 0
+          elapsed := unitsPerTick })
   else
     -- Walk forward and hop; look down and dig a shaft; then look at the ground
     -- to one side and stack blocks towards the player until the next one would
@@ -377,7 +342,7 @@ def scripted (opts : Options) (g : Game) : Game × Command :=
     let dig := 110 ≤ f && f < 140 && f % 6 == 0
     let place := if 150 ≤ f && f < 220 && f % 6 == 0 then some Block.cobble else none
     (g, { move := { wishZ := if walking then -Player.walkSpeed else 0, jump := f == 60 }
-          look := g.lookVector, dig, place })
+          look := g.lookVector, dig, place, elapsed := unitsPerTick })
 
 partial def loop (g : Game) (opts : Options) : IO Unit := do
   if ← windowShouldClose then return
@@ -385,11 +350,11 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
   let mut g ← g.look
   -- Scripted runs take exactly one tick per frame so that they are repeatable.
   if isScripted then
-    let (g', cmd) := scripted opts g
-    g := { ← g'.tick cmd with tickDebt := 0 }
+    let (g', frame) := scripted opts g
+    g ← g'.advance frame
   else
-    let (g', events) ← g.readEvents
-    g ← g'.simulate events
+    let (g', frame) ← g.readFrame
+    g ← g'.advance frame
   g ← g.stream (if opts.selftest.isSome then 100000 else 6)
   if opts.selftest.isSome && g.frame == 2 then
     let mut ground := g.player.pos.blockPos
@@ -417,36 +382,45 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
   loop { g with frame := g.frame + 1 } opts
 
 /--
-Check that presses are not lost when frames come faster than ticks. It drives
-`simulate` with made-up frames of a 240th of a second, so most frames run no
-tick, and delivers each press on a frame that runs none.
+Check, through the shell's own frame path, that presses are not lost when
+frames come faster than ticks. Frames are a 240th of a second long, so most run
+no tick, and each press is delivered on a frame that runs none.
+
+The rule itself is proved in `LeanMc.Proofs.Session`; this checks that the
+shell is wired to it and mirrors the resulting edits.
 -/
 def inputTest (g : Game) : IO UInt32 := do
-  let frame : Float := 1.0 / 240.0
-  -- Deliver `events` on the next frame that will not tick, then run a few more frames.
-  let press (g : Game) (events : Game.Events) : IO Game := do
+  let quarter : Nat := unitsPerTick / 4
+  -- Deliver `frame` on the next frame that will not tick, then run a few more frames.
+  let press (g : Game) (frame : Frame) : IO Game := do
     let mut g := g
     let mut sent := false
     for _ in [0:24] do
-      let quiet := g.tickDebt + frame < tickSeconds
+      let quiet := g.session.debt + quarter < unitsPerTick
       let now := quiet && !sent
-      g ← g.simulate (if now then { events with seconds := frame } else { seconds := frame })
+      let look := g.lookVector
+      g ← g.advance (if now then { frame with look, elapsed := quarter } else { look, elapsed := quarter })
       sent := sent || now
     return g
   let mut g ← g.stream 100000
   for _ in [0:60] do
-    g ← g.simulate { seconds := tickSeconds }
+    g ← g.advance { elapsed := unitsPerTick }
   let mut ok := true
   let report (name : String) (pass : Bool) : IO Bool := do
     IO.println s!"{if pass then "ok  " else "FAIL"}  {name}"
     return pass
   g := { g with pitch := -1.1, yaw := 0.0 }
   let before := g.edits
+  let target := g.state.target g.lookVector
   g ← press g { dig := true }
   ok := (← report "a dig pressed between ticks still digs" (g.edits == before + 1)) && ok
+  ok := (← report "the dug block is gone from the world and from the cache" <|
+    match target with
+    | some hit => g.world.get hit.block == .air && g.cache.blockAt g.world hit.block == .air
+    | none => false) && ok
   g := { g with pitch := -0.45, yaw := 0.7 }
   let before := g.edits
-  g ← press g { place := true }
+  g ← press g { place := some .cobble }
   ok := (← report "a place pressed between ticks still places" (g.edits == before + 1)) && ok
   g ← press g { fly := true }
   ok := (← report "a fly toggle pressed between ticks still toggles" g.player.flying) && ok
@@ -481,7 +455,9 @@ def run (args : List String) : IO UInt32 := do
     | none => if opts.flat then standNear world ⟨7, 12, 14⟩ else Terrain.spawn opts.seed
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
-  let game : Game := { world, player := { pos }, prevPos := pos, pitch := -0.35, yaw := 0.15 }
+  let session : Session :=
+    if opts.flat || opts.start.isSome then { state := ⟨world, { pos }⟩ } else Terrain.session opts.seed
+  let game : Game := { session, prevPos := pos, pitch := -0.35, yaw := 0.15 }
   if opts.inputtest then
     let code ← inputTest game
     closeWindow
