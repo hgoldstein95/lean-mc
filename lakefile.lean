@@ -61,6 +61,7 @@ target shim.o pkg : FilePath := do
     let weakArgs := #["-I", (← getLeanIncludeDir).toString, "-I", (pkg.dir / raylibSrc).toString]
     buildO oFile srcJob weakArgs #["-O2", "-fPIC"] "cc"
 
+@[default_target]
 lean_lib LeanMc
 
 @[default_target]
@@ -68,3 +69,8 @@ lean_exe leanmc where
   root := `Main
   moreLinkObjs := #[shim.o]
   moreLinkLibs := #[raylib]
+
+/-- Executable checks on the pure core; no native code needed. -/
+@[test_driver]
+lean_exe tests where
+  root := `Tests
