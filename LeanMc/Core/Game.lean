@@ -21,6 +21,7 @@ structure Command where
   dig : Bool := false
   /-- Put this block against the face being looked at. -/
   place : Option Block := none
+  deriving Repr
 
 structure State where
   world : World

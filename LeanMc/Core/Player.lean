@@ -66,6 +66,7 @@ structure Input where
   /-- Sink when flying. -/
   descend : Bool := false
   toggleFly : Bool := false
+  deriving Repr
 
 namespace Player
 

@@ -88,13 +88,21 @@ def lookVector (g : Game) : Vec3 :=
   let scale := State.reach.toFloat
   ⟨(dx * scale).toInt64.toInt, (dy * scale).toInt64.toInt, (dz * scale).toInt64.toInt⟩
 
+/--
+A slot number as the shim takes it. Numbers too big for 32 bits are pinned to
+the largest, which is out of the shim's range, so that they are refused as the
+model says they should be and do not wrap round to a valid slot.
+-/
+def slotArg (slot : Nat) : UInt32 :=
+  (min slot 0xFFFFFFFF).toUInt32
+
 /-- Carry out one instruction from the planner. This is the whole of the shell's rendering logic. -/
 def send : GpuCmd → IO Unit
-  | .upload slot vertices => meshUpload slot.toUInt32 vertices
-  | .unload slot => meshUnload slot.toUInt32
+  | .upload slot vertices => meshUpload (slotArg slot) vertices
+  | .unload slot => meshUnload (slotArg slot)
   | .beginScene => sceneBegin
   | .draw slot offset =>
-    meshDraw slot.toUInt32 (Float.ofInt offset.x / 65536.0) (Float.ofInt offset.y / 65536.0)
+    meshDraw (slotArg slot) (Float.ofInt offset.x / 65536.0) (Float.ofInt offset.y / 65536.0)
       (Float.ofInt offset.z / 65536.0)
 
 /-- Take a planning step: keep the planner's new memory and carry out its instructions. -/

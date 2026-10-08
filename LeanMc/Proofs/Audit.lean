@@ -117,6 +117,7 @@ open LeanMc
   Ray.cast_face_clear
   Ray.cast_walk
   Ray.cast_within
+  Ray.cast_none
 
 -- The game
 #assert_standard_axioms

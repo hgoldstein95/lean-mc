@@ -131,6 +131,75 @@ theorem castFrom_within {fuel : Nat} {c : BlockPos} {entered : Option Dir} {hit 
       · cases h
       · next hn => exact ih (within_step hw (nextStep_crosses hn)) h
 
+/-! ## The walk never stops early -/
+
+/-- Each step of the walk brings it one cell closer to the far end of the segment. -/
+theorem remaining_step {o d : Vec3} {c : BlockPos} {dir : Dir} (h : crosses o d c dir = true) :
+    remaining o d (c.step dir) + 1 = remaining o d c := by
+  cases dir <;> simp only [crosses, decide_eq_true_eq, remaining, BlockPos.step] at h ⊢ <;> omega
+
+theorem foldl_pick_none (o d : Vec3) (c : BlockPos) (l : List Dir) (best : Option Dir)
+    (h : l.foldl (pick o d c) best = none) : best = none ∧ l = [] := by
+  induction l generalizing best with
+  | nil => exact ⟨h, rfl⟩
+  | cons a l ih =>
+    have := (ih _ h).1
+    unfold pick at this
+    split at this
+    · cases this
+    · split at this <;> cases this
+
+/-- The walk stops for want of a next cell only in the cell holding the segment's far end. -/
+theorem blockPos_of_nextStep_none {o d : Vec3} {c : BlockPos} (h : nextStep o d c = none) :
+    c = (⟨o.x + d.x, o.y + d.y, o.z + d.z⟩ : Vec3).blockPos := by
+  have hempty := (foldl_pick_none o d c _ none h).2
+  have hno : ∀ dir, crosses o d c dir = false := by
+    intro dir
+    cases hc : crosses o d c dir
+    · rfl
+    · have : dir ∈ Dir.all.filter (crosses o d c) := List.mem_filter.mpr ⟨Dir.mem_all dir, hc⟩
+      rw [hempty] at this
+      cases this
+  have hxp := hno .xp
+  have hxn := hno .xn
+  have hyp := hno .yp
+  have hyn := hno .yn
+  have hzp := hno .zp
+  have hzn := hno .zn
+  simp only [crosses, decide_eq_false_iff_not] at hxp hxn hyp hyn hzp hzn
+  ext <;> simp only [Vec3.blockPos] <;> omega
+
+/-- With fuel for every cell it could enter, the walk gives up only at the segment's far end. -/
+theorem castFrom_none {fuel : Nat} {c : BlockPos} {entered : Option Dir}
+    (hf : remaining o d c < fuel) (h : castFrom solid o d fuel c entered = none) :
+    Walk solid c (⟨o.x + d.x, o.y + d.y, o.z + d.z⟩ : Vec3).blockPos
+      ∧ solid (⟨o.x + d.x, o.y + d.y, o.z + d.z⟩ : Vec3).blockPos = false := by
+  induction fuel generalizing c entered with
+  | zero => omega
+  | succ fuel ih =>
+    unfold castFrom at h
+    split at h
+    · cases h
+    · next hs =>
+      split at h
+      · next hn =>
+        rw [← blockPos_of_nextStep_none hn]
+        exact ⟨.here _, by simpa using hs⟩
+      · next dir hn =>
+        have hstep := remaining_step (nextStep_crosses hn)
+        obtain ⟨hw, hend⟩ := ih (by omega) h
+        exact ⟨.step dir (by simpa using hs) hw, hend⟩
+
+/--
+**Nothing is missed for want of looking.** If no block is targeted, the walk
+went all the way to the cell at the far end of the segment, through cells that
+were all empty, however long the segment.
+-/
+theorem cast_none (h : cast solid o d = none) :
+    Walk solid o.blockPos (⟨o.x + d.x, o.y + d.y, o.z + d.z⟩ : Vec3).blockPos
+      ∧ solid (⟨o.x + d.x, o.y + d.y, o.z + d.z⟩ : Vec3).blockPos = false :=
+  castFrom_none (Nat.lt_succ_self _) h
+
 /-- **The target is solid.** -/
 theorem cast_solid {hit : RayHit} (h : cast solid o d = some hit) : solid hit.block = true :=
   castFrom_solid h

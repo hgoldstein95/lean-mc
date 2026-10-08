@@ -40,6 +40,7 @@ structure Frame where
   fly : Bool := false
   /-- How long the frame took, in time units. -/
   elapsed : Nat := 0
+  deriving Repr
 
 /-- Presses that no tick has acted on yet. -/
 structure Pending where

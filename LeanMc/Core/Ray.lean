@@ -74,12 +74,17 @@ def castFrom (solid : BlockPos → Bool) (o d : Vec3) : Nat → BlockPos → Opt
       | none => none
       | some dir => castFrom solid o d fuel (c.step dir) (some dir)
 
-/-- More steps than any segment within reach can take. -/
-def fuel : Nat := 64
+/--
+How many more cells the walk can enter from `c`: the distance, cell by cell
+along each axis, to the cell holding the far end of the segment.
+-/
+def remaining (o d : Vec3) (c : BlockPos) : Nat :=
+  ((o.x + d.x) / 65536 - c.x).natAbs + ((o.y + d.y) / 65536 - c.y).natAbs
+    + ((o.z + d.z) / 65536 - c.z).natAbs
 
-/-- The first solid block along the segment from `o` to `o + d`. -/
+/-- The first solid block along the segment from `o` to `o + d`, however long it is. -/
 def cast (solid : BlockPos → Bool) (o d : Vec3) : Option RayHit :=
-  castFrom solid o d fuel o.blockPos none
+  castFrom solid o d (remaining o d o.blockPos + 1) o.blockPos none
 
 end Ray
 
