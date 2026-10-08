@@ -53,6 +53,12 @@ structure Game where
   selected : Nat := 0
   /-- Number of blocks dug or placed so far. -/
   edits : Nat := 0
+  /-- Number of ticks simulated in normal play. -/
+  ticks : Nat := 0
+  /-- Presses that no tick has acted on yet. Frames can come faster than ticks. -/
+  pendingDig : Bool := false
+  pendingPlace : Bool := false
+  pendingFly : Bool := false
   frame : Nat := 0
 
 /-- Offsets of every chunk within view of a centre chunk, nearest first. -/
@@ -199,37 +205,63 @@ def readInput (g : Game) : IO Input := do
     wishZ := (wz * scale).toInt64.toInt
     jump := ← keyDown Key.space
     descend := ← keyDown Key.leftShift
-    toggleFly := ← keyPressed Key.f
   }
 
+/-- What the keyboard and mouse reported during one frame. -/
+structure Events where
+  /-- Movement keys currently held. -/
+  move : Input := {}
+  /-- The dig button went down during this frame. -/
+  dig : Bool := false
+  /-- The place button went down during this frame. -/
+  place : Bool := false
+  /-- The fly key went down during this frame. -/
+  fly : Bool := false
+  /-- How long the frame took. -/
+  seconds : Float := 0.0
+
 /--
-Read everything the player is asking for. A click while the mouse is free only
-captures it; once captured, left digs and right places.
+Read this frame's input. A click while the mouse is free only captures it;
+once captured, left digs and right places.
 -/
-def readCommand (g : Game) : IO (Game × Command) := do
+def readEvents (g : Game) : IO (Game × Events) := do
   let left ← mousePressed Mouse.left
   let right ← mousePressed Mouse.right
-  let cmd : Command := {
+  let events : Events := {
     move := ← g.readInput
-    look := g.lookVector
     dig := g.captured && left
-    place := if g.captured && right then palette[g.selected]? else none
+    place := g.captured && right
+    fly := ← keyPressed Key.f
+    seconds := ← frameTime
   }
   if left && !g.captured then
     setCursorCaptured true
-    return ({ g with captured := true }, cmd)
-  return (g, cmd)
+    return ({ g with captured := true }, events)
+  return (g, events)
 
-/-- Run as many ticks as the elapsed time calls for. -/
-def simulate (g : Game) : IO Game := do
-  let (g, cmd) ← g.readCommand
-  let mut g := { g with tickDebt := min 0.25 (g.tickDebt + (← frameTime)) }
-  let mut cmd := cmd
+/--
+Run as many ticks as the elapsed time calls for.
+
+A frame may run no tick at all, so a press is remembered until a tick acts on
+it, and then acted on once. Held keys apply to every tick.
+-/
+def simulate (g : Game) (events : Events) : IO Game := do
+  let mut g := { g with
+    tickDebt := min 0.25 (g.tickDebt + events.seconds)
+    pendingDig := g.pendingDig || events.dig
+    pendingPlace := g.pendingPlace || events.place
+    pendingFly := g.pendingFly || events.fly }
   while g.tickDebt ≥ tickSeconds do
+    let cmd : Command := {
+      move := { events.move with toggleFly := g.pendingFly }
+      look := g.lookVector
+      dig := g.pendingDig
+      place := if g.pendingPlace then palette[g.selected]? else none
+    }
     let debt := g.tickDebt - tickSeconds
-    g := { ← g.tick cmd with tickDebt := debt }
-    -- A press belongs to one tick only; held keys carry on.
-    cmd := { cmd with dig := false, place := none, move := { cmd.move with toggleFly := false } }
+    g := { ← g.tick cmd with
+      tickDebt := debt, ticks := g.ticks + 1
+      pendingDig := false, pendingPlace := false, pendingFly := false }
   return g
 
 def draw (g : Game) : IO Unit := do
@@ -301,6 +333,8 @@ structure Options where
   flytest : Option String := none
   /-- Quit after this many frames of normal play, reporting where the player ended up. -/
   frames : Option Nat := none
+  /-- Check input handling with made-up frames instead of playing. -/
+  inputtest : Bool := false
 
 def Options.parse (opts : Options := {}) : List String → Except String Options
   | [] => pure opts
@@ -315,6 +349,7 @@ def Options.parse (opts : Options := {}) : List String → Except String Options
     | some n => parse { opts with seed := n.toUInt64 } rest
     | none => throw "--seed expects a number"
   | "--flat" :: rest => parse { opts with flat := true } rest
+  | "--inputtest" :: rest => parse { opts with inputtest := true } rest
   | "--frames" :: n :: rest =>
     match n.toNat? with
     | some n => parse { opts with frames := some n } rest
@@ -353,7 +388,8 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
     let (g', cmd) := scripted opts g
     g := { ← g'.tick cmd with tickDebt := 0 }
   else
-    g ← g.simulate
+    let (g', events) ← g.readEvents
+    g ← g'.simulate events
   g ← g.stream (if opts.selftest.isSome then 100000 else 6)
   if opts.selftest.isSome && g.frame == 2 then
     let mut ground := g.player.pos.blockPos
@@ -372,13 +408,52 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
     IO.println s!"frame {g.frame}: {g.meshes.size} meshed, {g.cache.chunks.size} cached, \
       feet at {p.pos.x} {p.pos.y} {p.pos.z} units, block {p.pos.blockPos.x} {p.pos.blockPos.y} \
       {p.pos.blockPos.z}, onGround {p.onGround}, flying {p.flying}, {g.edits} blocks dug or \
-      placed, inside something solid: {Player.blocked g.world.solid p.pos}"
+      placed, {g.ticks} ticks, inside something solid: {Player.blocked g.world.solid p.pos}"
   match opts.selftest, opts.flytest with
   | some path, _ => if g.frame == 230 then return ← finish path
   | _, some path => if g.frame == flytestFrames then return ← finish path
   | _, _ => if opts.frames == some g.frame then return ← finish ""
   endFrame
   loop { g with frame := g.frame + 1 } opts
+
+/--
+Check that presses are not lost when frames come faster than ticks. It drives
+`simulate` with made-up frames of a 240th of a second, so most frames run no
+tick, and delivers each press on a frame that runs none.
+-/
+def inputTest (g : Game) : IO UInt32 := do
+  let frame : Float := 1.0 / 240.0
+  -- Deliver `events` on the next frame that will not tick, then run a few more frames.
+  let press (g : Game) (events : Game.Events) : IO Game := do
+    let mut g := g
+    let mut sent := false
+    for _ in [0:24] do
+      let quiet := g.tickDebt + frame < tickSeconds
+      let now := quiet && !sent
+      g ← g.simulate (if now then { events with seconds := frame } else { seconds := frame })
+      sent := sent || now
+    return g
+  let mut g ← g.stream 100000
+  for _ in [0:60] do
+    g ← g.simulate { seconds := tickSeconds }
+  let mut ok := true
+  let report (name : String) (pass : Bool) : IO Bool := do
+    IO.println s!"{if pass then "ok  " else "FAIL"}  {name}"
+    return pass
+  g := { g with pitch := -1.1, yaw := 0.0 }
+  let before := g.edits
+  g ← press g { dig := true }
+  ok := (← report "a dig pressed between ticks still digs" (g.edits == before + 1)) && ok
+  g := { g with pitch := -0.45, yaw := 0.7 }
+  let before := g.edits
+  g ← press g { place := true }
+  ok := (← report "a place pressed between ticks still places" (g.edits == before + 1)) && ok
+  g ← press g { fly := true }
+  ok := (← report "a fly toggle pressed between ticks still toggles" g.player.flying) && ok
+  let before := g.edits
+  g ← press g {}
+  ok := (← report "no press, no edit" (g.edits == before && g.player.flying)) && ok
+  return if ok then 0 else 1
 
 /--
 A standing position near the middle of block `b`: raised until it is clear of
@@ -397,7 +472,7 @@ def run (args : List String) : IO UInt32 := do
     | .ok opts => pure opts
     | .error message =>
       IO.eprintln message
-      IO.eprintln "usage: leanmc [--seed N] [--flat] [--at X Y Z] [--frames N] [--selftest PNG | --flytest PNG]"
+      IO.eprintln "usage: leanmc [--seed N] [--flat] [--at X Y Z] [--frames N] [--selftest PNG | --flytest PNG | --inputtest]"
       return 2
   let world := if opts.flat then World.new Terrain.flat else Terrain.world opts.seed
   let pos :=
@@ -406,7 +481,12 @@ def run (args : List String) : IO UInt32 := do
     | none => if opts.flat then standNear world ⟨7, 12, 14⟩ else Terrain.spawn opts.seed
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
-  loop { world, player := { pos }, prevPos := pos, pitch := -0.35, yaw := 0.15 } opts
+  let game : Game := { world, player := { pos }, prevPos := pos, pitch := -0.35, yaw := 0.15 }
+  if opts.inputtest then
+    let code ← inputTest game
+    closeWindow
+    return code
+  loop game opts
   closeWindow
   return 0
 
