@@ -163,6 +163,11 @@ def dropFar (r : Renderer) (view : ViewRange) (centre : ChunkPos) : Renderer × 
   let stale := (dropped.1.cache.chunks.toList.map (·.1)).filter (view.isFar centre · 2)
   ({ dropped.1 with cache := stale.foldl ChunkCache.unload dropped.1.cache }, dropped.2)
 
+/-- Forget everything: empty every slot and the cache, as when a different world is loaded. -/
+def reset (r : Renderer) : Renderer × List GpuCmd :=
+  let dropped := forEach drop r (r.slots.toList.map (·.1))
+  ({ dropped.1 with cache := {} }, dropped.2)
+
 /-- Where chunk `c`'s corner is, measured from the eye, in fixed-point units. -/
 def chunkOffset (c : ChunkPos) (eye : Vec3) : Vec3 :=
   ⟨16 * c.x * 65536 - eye.x, 16 * c.y * 65536 - eye.y, 16 * c.z * 65536 - eye.z⟩

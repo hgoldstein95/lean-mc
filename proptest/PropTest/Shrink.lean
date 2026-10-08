@@ -102,6 +102,27 @@ def shrinkGpuCmd : GpuCmd → List GpuCmd
     (shrinkNat slot).filterMap (fun s => if s = 0 then none else some (.draw s offset))
       ++ (shrinkVec3 offset).map (.draw slot ·)
 
+def shrinkInventory (inv : Inventory) : List Inventory :=
+  (List.finRange 9).flatMap fun i =>
+    match inv.slots[i] with
+    | none => []
+    | some s =>
+      [⟨inv.slots.set i none⟩]
+        ++ (if s.extra.val = 0 then [] else [⟨inv.slots.set i (some { s with extra := 0 })⟩])
+        ++ (if s.block = .stone then [] else [⟨inv.slots.set i (some { s with block := .stone })⟩])
+
+def shrinkPlayer (p : Player) : List Player :=
+  (shrinkVec3 p.pos).map (fun pos => { p with pos })
+    ++ (shrinkVec3 p.vel).map (fun vel => { p with vel })
+    ++ (if p.onGround then [{ p with onGround := false }] else [])
+    ++ (if p.flying then [{ p with flying := false }] else [])
+
+def shrinkEdit (e : BlockPos × Block) : List (BlockPos × Block) :=
+  (shrinkInt e.1.x).map (fun x => ({ e.1 with x }, e.2))
+    ++ (shrinkInt e.1.y).map (fun y => ({ e.1 with y }, e.2))
+    ++ (shrinkInt e.1.z).map (fun z => ({ e.1 with z }, e.2))
+    ++ (shrinkBlock e.2).map (fun b => (e.1, b))
+
 /--
 Smaller lists: first with a half, quarter or eighth cut out, then with one
 element removed, then with one element made smaller.
@@ -119,6 +140,13 @@ def shrinkList (shrinkElem : α → List α) (xs : List α) : List (List α) :=
 
 def shrinkPair (shrinkA : α → List α) (shrinkB : β → List β) (p : α × β) : List (α × β) :=
   (shrinkA p.1).map (·, p.2) ++ (shrinkB p.2).map (p.1, ·)
+
+def shrinkSaveData (d : SaveData) : List SaveData :=
+  (shrinkList shrinkEdit d.edits).map (fun edits => { d with edits })
+    ++ (shrinkInventory d.inventory).map (fun inventory => { d with inventory })
+    ++ (shrinkPlayer d.player).map (fun player => { d with player })
+    ++ (shrinkNat d.seed.toNat).map (fun n => { d with seed := n.toUInt64 })
+    ++ (if d.selected = 0 then [] else [{ d with selected := 0 }])
 
 /-! ## Running a property -/
 

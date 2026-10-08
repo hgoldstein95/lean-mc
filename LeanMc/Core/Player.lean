@@ -54,7 +54,7 @@ structure Player where
   vel : Vec3 := ⟨0, 0, 0⟩
   onGround : Bool := false
   flying : Bool := false
-  deriving Repr
+  deriving DecidableEq, Repr
 
 /-- What the player is trying to do this tick. -/
 structure Input where

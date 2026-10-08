@@ -88,6 +88,8 @@ def s : UInt32 := 83
 def w : UInt32 := 87
 def escape : UInt32 := 256
 def f3 : UInt32 := 292
+def f5 : UInt32 := 294
+def f9 : UInt32 := 298
 def leftShift : UInt32 := 340
 def leftControl : UInt32 := 341
 end Key

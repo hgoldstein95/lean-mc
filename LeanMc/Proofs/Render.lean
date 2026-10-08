@@ -613,6 +613,64 @@ theorem Synced.dropFar {dirty : ChunkPos → Prop} {r : Renderer} {w : World} {g
   have h1 := h.forEach_drop ((r.slots.toList.map (·.1)).filter (view.isFar centre · 1))
   exact h1.withCache (foldl_unload_valid h1.cache _)
 
+/-! ## Starting over -/
+
+theorem slots_drop (r : Renderer) (c : ChunkPos) : (r.drop c).1.slots = r.slots.erase c := by
+  unfold Renderer.drop
+  simp only []
+  split <;> rfl
+
+theorem slots_forEach_drop (cs : List ChunkPos) (r : Renderer) (c' : ChunkPos) :
+    (forEach Renderer.drop r cs).1.slots[c']? = if c' ∈ cs then none else r.slots[c']? := by
+  induction cs generalizing r with
+  | nil => simp [forEach]
+  | cons c cs ih =>
+    rw [forEach_cons]
+    simp only []
+    rw [ih, slots_drop, Std.HashMap.getElem?_erase]
+    by_cases h1 : c' ∈ cs
+    · simp [h1]
+    · by_cases h2 : c = c'
+      · simp [h2]
+      · have : c' ≠ c := fun e => h2 e.symm
+        simp [h1, h2, this]
+
+/--
+**Loading another world leaves nothing behind.** After a reset no chunk holds a
+slot, so the planner and the graphics side agree with any world at all.
+-/
+theorem Synced.reset {dirty : ChunkPos → Prop} {r : Renderer} {w : World} {g : Gpu}
+    (h : Synced dirty r w g) (w' : World) :
+    Synced (fun _ => False) r.reset.1 w' (g.run r.reset.2) := by
+  have h1 := h.forEach_drop (r.slots.toList.map (·.1))
+  have hnone : ∀ c : ChunkPos,
+      (forEach Renderer.drop r (r.slots.toList.map (·.1))).1.slots[c]? = none := by
+    intro c
+    rw [slots_forEach_drop]
+    split
+    · rfl
+    · next hn =>
+      cases hc : r.slots[c]? with
+      | none => rfl
+      | some s =>
+        exact absurd (List.mem_map.mpr
+          ⟨(c, s), Std.HashMap.mem_toList_iff_getElem?_eq_some.mpr hc, rfl⟩) hn
+  have hslots : ∀ (c : ChunkPos) (s : Nat), r.reset.1.slots[c]? ≠ some s := fun c s hs => by
+    have : r.reset.1.slots[c]? = none := hnone c
+    rw [this] at hs
+    cases hs
+  exact {
+    cache := ChunkCache.valid_empty w'
+    noFault := h1.noFault
+    live := fun c s hs => absurd hs (hslots c s)
+    mesh := fun c s hs => absurd hs (hslots c s)
+    empty := fun c hs => absurd hs (hslots c 0)
+    inj := fun c c' s hs => absurd hs (hslots c s)
+    bound := fun c s hs => absurd hs (hslots c s)
+    free := h1.free
+    freeNodup := h1.freeNodup
+    next := h1.next }
+
 /-! ## The scene -/
 
 theorem run_draws (g : Gpu) (eye : Vec3) (l : List (ChunkPos × Nat))

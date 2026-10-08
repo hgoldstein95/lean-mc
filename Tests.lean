@@ -4,6 +4,7 @@ import LeanMc.Core.Generated
 import LeanMc.Proofs.Player
 import LeanMc.Core.Start
 import LeanMc.Core.View
+import LeanMc.Core.Save
 
 /-!
 Executable checks on the pure core, run with `lake test`. They complement the
@@ -318,5 +319,45 @@ def main : IO UInt32 := do
   let stalled := fresh.frame { elapsed := 1000000 }
   ok := (← check "a stalled frame runs a bounded number of ticks and owes nothing after" <|
     (fresh.commands { elapsed := 1000000 }).length == maxTicksPerFrame && stalled.debt == 0) && ok
+
+  -- Saving and loading: play for a while in the generated world, then save.
+  let playedFrames : List Frame := (List.range 400).map fun i =>
+    let cmd := randomCommand i
+    { move := cmd.move, look := cmd.look, dig := cmd.dig, place := cmd.place, select := cmd.select
+      elapsed := 400 + noise i % 1200 }
+  let played := ((Terrain.session seed).play playedFrames).1
+  let data := played.snapshot seed
+  ok := (← check s!"a played game is saved with its edits ({data.edits.length}) and inventory" <|
+    data.edits.length > 20 && (kinds.map data.inventory.count).sum > 0) && ok
+
+  ok := (← check "a saved game survives being written as text and read back" <|
+    SaveData.ofText? data.toText == some data && SaveData.decode? data.encode == some data) && ok
+
+  ok := (← check "loading a saved game gives the same player, inventory and blocks" <|
+    match data.restore? with
+    | some loaded =>
+      loaded.state.player == played.state.player
+        && loaded.state.inventory == played.state.inventory
+        && loaded.state.selected == played.state.selected
+        && data.edits.all (fun (p, _) => (p :: Dir.all.map p.step).all fun q =>
+            loaded.state.world.get q == played.state.world.get q)
+    | none => false) && ok
+
+  let ints := data.encode
+  ok := (← check "damaged saves are refused" <|
+    (SaveData.decode? (ints.set 0 1)).isNone                 -- wrong magic
+      && (SaveData.decode? (ints.take 20)).isNone            -- cut short
+      && (SaveData.decode? (ints ++ [0])).isNone             -- something left over
+      && (SaveData.decode? (ints.set 12 2 |>.set 13 65)).isNone   -- a stack of 65
+      && (SaveData.decode? (ints.set 12 2 |>.set 13 0)).isNone    -- an empty stack
+      && (SaveData.decode? (ints.set 12 77 |>.set 13 1)).isNone   -- no such block
+      && (SaveData.decode? (ints.set 11 9)).isNone) && ok    -- no such slot
+
+  ok := (← check "saves describing an unsound game are refused" <|
+    -- Appended, because a later edit to a cell wins and the player may stand in a cell they dug.
+    ({ data with edits := data.edits ++ [(data.player.pos.blockPos, Block.stone)] }).restore?.isNone
+      && ({ data with edits := data.edits ++ [((⟨3, 0, 3⟩ : BlockPos), Block.air)] }).restore?.isNone
+      && ({ data with player := { data.player with pos := ⟨0, -70000, 0⟩ } }).restore?.isNone
+      && ({ data with inventory := carrying .air 1 }).restore?.isNone) && ok
 
   return if ok then 0 else 1

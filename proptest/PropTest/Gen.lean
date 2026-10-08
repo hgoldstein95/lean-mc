@@ -1,6 +1,7 @@
 import Basalt.Combinators
 import LeanMc.Core.Start
 import LeanMc.Core.Render
+import LeanMc.Core.Save
 
 /-!
 # Generators
@@ -111,6 +112,48 @@ def genRay : G (Vec3 × Vec3) := do
   let origin : Vec3 :=
     ⟨← chooseInt 0 1310720, ← chooseInt 557056 917504, ← chooseInt 0 1310720⟩
   return (origin, ← genLook)
+
+/-! ## Saved games -/
+
+/-- An integer of any size and sign, including ones too big for 64 bits. -/
+def genWideInt : G Int :=
+  frequency! [
+    (4, fun _ => chooseInt (-70) 70),
+    (3, fun _ => chooseInt (-3000000) 3000000),
+    (1, fun _ => elements
+      [(1000000000000000000000 : Int), -1000000000000000000000, 9223372036854775808,
+       -9223372036854775809, 0, -1])
+  ] (by simp)
+
+def genAnyBlock : G Block :=
+  elements [Block.air, .bedrock, .stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
+
+def genSlot9 : G (Fin 9) := do
+  return ⟨(← chooseNat 0 8) % 9, Nat.mod_lt _ (by decide)⟩
+
+def genInventory : G Inventory := do
+  let mut slots : Vector (Option Stack) 9 := Vector.replicate 9 none
+  for i in List.finRange 9 do
+    if ← chance 50 then
+      let extra : Fin 64 := ⟨(← chooseNat 0 63) % 64, Nat.mod_lt _ (by decide)⟩
+      slots := slots.set i (some ⟨← genAnyBlock, extra⟩)
+  return ⟨slots⟩
+
+/-- Any saved game at all, sound or not: the encoding has to cope with every one. -/
+def genSaveData : G SaveData := do
+  let vec : G Vec3 := do return ⟨← genWideInt, ← genWideInt, ← genWideInt⟩
+  let seed ← frequency! [
+    (3, fun _ => chooseNat 0 100),
+    (1, fun _ => elements [18446744073709551615, 9223372036854775808, 4294967296])
+  ] (by simp)
+  let edits ← listOfMaxLength 12 (do
+    return ((⟨← genWideInt, ← genWideInt, ← genWideInt⟩ : BlockPos), ← genAnyBlock))
+  return {
+    seed := seed.toUInt64
+    player := { pos := ← vec, vel := ← vec, onGround := ← chance 50, flying := ← chance 50 }
+    inventory := ← genInventory
+    selected := ← genSlot9
+    edits }
 
 /-! ## Renderer operations -/
 

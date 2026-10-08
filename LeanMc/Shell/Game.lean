@@ -5,6 +5,7 @@ import LeanMc.Core.Generated
 import LeanMc.Core.Start
 import LeanMc.Core.View
 import LeanMc.Core.Render
+import LeanMc.Core.Save
 import LeanMc.Shell.Atlas
 
 /-!
@@ -46,6 +47,11 @@ structure Game where
   /-- Number of ticks simulated so far. -/
   ticks : Nat := 0
   frame : Nat := 0
+  /-- The seed of the generated world, which a saved game records; none for the flat test world. -/
+  seed : Option UInt64 := none
+  /-- A message to show for a while, and the frame at which to stop showing it. -/
+  notice : String := ""
+  noticeUntil : Nat := 0
 
 /--
 Offsets of every chunk in view of a centre chunk, nearest first. Which offsets
@@ -129,6 +135,37 @@ def stream (g : Game) (budgetMs : Nat) : IO Game := do
       if (← IO.monoMsNow) - start ≥ budgetMs then
         break
   return g
+
+def say (g : Game) (notice : String) : Game :=
+  { g with notice, noticeUntil := g.frame + 240 }
+
+/-- Where the game is saved. -/
+def savePath : System.FilePath := "lean-mc.save"
+
+/-- Write the game to a file. -/
+def save (g : Game) (path : System.FilePath := savePath) : IO Game := do
+  match g.seed with
+  | none => return g.say "this world cannot be saved"
+  | some seed =>
+    IO.FS.writeFile path (g.session.snapshot seed).toText
+    return g.say s!"saved to {path}"
+
+/--
+Read a game from a file. The core checks everything about it; if it is not a
+sound game, nothing changes. Otherwise the renderer is emptied and play carries
+on from the saved game.
+-/
+def load (g : Game) (path : System.FilePath := savePath) : IO Game := do
+  let text ← try IO.FS.readFile path catch _ => return g.say s!"there is no {path} to load"
+  match SaveData.ofText? text with
+  | none => return g.say s!"{path} is not a saved game"
+  | some data =>
+    match data.restore? with
+    | none => return g.say s!"{path} does not describe a sound game"
+    | some session =>
+      let g ← g.plan g.renderer.reset
+      return { g with session, seed := some data.seed, prevPos := session.state.player.pos }.say
+        s!"loaded {path}"
 
 /-- Drop meshes and cached chunks that are well out of view. -/
 def unloadFar (g : Game) : IO Game :=
@@ -254,8 +291,10 @@ def draw (g : Game) : IO Unit := do
       drawText s!"{stack.count}" (x + 5) (top + slot - 19) 16 0xffffffff
   if let some stack := g.state.inventory.stack g.state.selected then
     drawText (blockName stack.block) left (top - 22) 16 0xffffffff
+  if g.frame < g.noticeUntil then
+    drawText g.notice 10 58 20 0xffff80ff
   unless g.captured do
-    drawText "click to capture the mouse   WASD: move   space: jump   ctrl: sprint   F: fly"
+    drawText "click to capture the mouse   WASD: move   space: jump   ctrl: sprint   F: fly   F5: save   F9: load"
       10 (h - 46) 16 0xffffffff
     drawText "left click: dig   right click: place   1-9: choose slot   esc: release the mouse"
       10 (h - 26) 16 0xffffffff
@@ -290,6 +329,10 @@ structure Options where
   frames : Option Nat := none
   /-- Check input handling with made-up frames instead of playing. -/
   inputtest : Bool := false
+  /-- Check saving and loading through this file instead of playing. -/
+  savetest : Option String := none
+  /-- Start from this saved game. -/
+  load : Option String := none
 
 def Options.parse (opts : Options := {}) : List String → Except String Options
   | [] => pure opts
@@ -305,6 +348,8 @@ def Options.parse (opts : Options := {}) : List String → Except String Options
     | none => throw "--seed expects a number"
   | "--flat" :: rest => parse { opts with flat := true } rest
   | "--inputtest" :: rest => parse { opts with inputtest := true } rest
+  | "--savetest" :: path :: rest => parse { opts with savetest := some path } rest
+  | "--load" :: path :: rest => parse { opts with load := some path } rest
   | "--frames" :: n :: rest =>
     match n.toNat? with
     | some n => parse { opts with frames := some n } rest
@@ -345,6 +390,8 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
   else
     let (g', frame) ← g.readFrame
     g ← g'.advance frame
+    if ← keyPressed Key.f5 then g ← g.save
+    if ← keyPressed Key.f9 then g ← g.load
   g ← g.stream (if opts.selftest.isSome then 100000 else 6)
   if opts.selftest.isSome && g.frame == 2 then
     let mut ground := g.player.pos.blockPos
@@ -424,6 +471,73 @@ def inputTest (g : Game) : IO UInt32 := do
   return if ok then 0 else 1
 
 /--
+Check saving and loading through the shell: play, save, play on, load, and
+compare with the moment of saving. Then check that a damaged file and a file
+describing an impossible game are both refused and change nothing.
+
+That a saved and loaded game is the same game is proved in
+`LeanMc.Proofs.Save` for the integer encoding; this covers the text and file
+around it and the renderer's reset.
+-/
+def saveTest (g : Game) (path : String) : IO UInt32 := do
+  let report (name : String) (pass : Bool) : IO Bool := do
+    IO.println s!"{if pass then "ok  " else "FAIL"}  {name}"
+    return pass
+  let opts : Options := { selftest := some "" }
+  let play (g : Game) (frames : List Nat) : IO Game := do
+    let mut g := g
+    for f in frames do
+      let (g', frame) := scripted opts { g with frame := f }
+      g ← g'.advance frame
+    return g
+  let mut ok := true
+  let mut g ← g.stream 100000
+  g ← play g (List.range 170)
+  g ← g.save path
+  let saved := g
+  let cells := saved.world.edits.toList.map (·.1)
+  ok := (← report "the game being saved has dug and placed blocks and carries one"
+    (cells.length ≥ 4 && saved.state.inventory.count .sand == 1)) && ok
+  -- Carry on: walk, and dig some more, so that the game differs from the saved one.
+  g := { g with pitch := -1.2, yaw := 2.0 }
+  g ← play g ((List.range 30).map (· + 110))
+  ok := (← report "playing on changes the game" (g.world.edits.size != saved.world.edits.size)) && ok
+  g ← g.load path
+  ok := (← report "loading restores the player, the inventory and the selected slot" <|
+    g.player == saved.player && g.state.inventory == saved.state.inventory
+      && g.state.selected == saved.state.selected) && ok
+  let near := cells.flatMap fun p => p :: Dir.all.map p.step
+  ok := (← report "loading restores every edited block and leaves its neighbours as they were" <|
+    near.all (fun p => g.world.get p == saved.world.get p)
+      && g.world.edits.size == saved.world.edits.size) && ok
+  ok := (← report "the renderer starts again from nothing" (g.renderer.slots.size == 0)) && ok
+  g ← g.stream 100000
+  ok := (← report "and rebuilds the world without misusing the shim" <|
+    g.renderer.slots.size > 0 && !(← debugFault)) && ok
+  -- A damaged file, and a well-formed file describing an unsound game.
+  let text ← IO.FS.readFile path
+  IO.FS.writeFile path (text.take 40).toString
+  let after ← g.load path
+  ok := (← report "a truncated file is refused and nothing changes" <|
+    after.player == g.player && after.world.edits.size == g.world.edits.size
+      && after.notice.endsWith "is not a saved game") && ok
+  if let some seed := saved.seed then
+    let data := saved.session.snapshot seed
+    -- Appended, because a later edit to a cell wins.
+    let buried := { data with edits := data.edits ++ [(data.player.pos.blockPos, Block.stone)] }
+    IO.FS.writeFile path buried.toText
+    let after ← g.load path
+    ok := (← report "a file that buries the player is refused" <|
+      after.player == g.player && after.notice.endsWith "does not describe a sound game") && ok
+    let holed := { data with edits := data.edits ++ [((⟨0, 0, 0⟩ : BlockPos), Block.air)] }
+    IO.FS.writeFile path holed.toText
+    let after ← g.load path
+    ok := (← report "a file with a hole in the floor is refused" <|
+      after.notice.endsWith "does not describe a sound game") && ok
+  IO.FS.removeFile path
+  return if ok then 0 else 1
+
+/--
 A standing position near the middle of block `b`: raised until it is clear of
 anything solid, then lowered onto the ground.
 -/
@@ -440,7 +554,8 @@ def run (args : List String) : IO UInt32 := do
     | .ok opts => pure opts
     | .error message =>
       IO.eprintln message
-      IO.eprintln "usage: leanmc [--seed N] [--flat] [--at X Y Z] [--frames N] [--selftest PNG | --flytest PNG | --inputtest]"
+      IO.eprintln "usage: leanmc [--seed N] [--flat] [--at X Y Z] [--load FILE] [--frames N]\n       \
+        [--selftest PNG | --flytest PNG | --inputtest | --savetest FILE]"
       return 2
   -- A session can only be built with a proof that its state is sound: either the
   -- generated world's own start, or a position the core has checked.
@@ -460,7 +575,16 @@ def run (args : List String) : IO UInt32 := do
   let pos := session.state.player.pos
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
-  let game : Game := { session, prevPos := pos, pitch := -0.35, yaw := 0.15 }
+  let mut game : Game :=
+    { session, prevPos := pos, pitch := -0.35, yaw := 0.15
+      seed := if opts.flat then none else some opts.seed }
+  if let some path := opts.load then
+    game ← game.load path
+    IO.println game.notice
+  if let some path := opts.savetest then
+    let code ← saveTest game path
+    closeWindow
+    return code
   if opts.inputtest then
     let code ← inputTest game
     closeWindow

@@ -11,6 +11,7 @@ import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
 import LeanMc.Proofs.View
 import LeanMc.Proofs.Render
+import LeanMc.Proofs.Save
 import LeanMc.Core.Start
 import LeanMc.Proofs.Generated
 
@@ -183,6 +184,7 @@ open LeanMc
   Renderer.Synced.drop
   Renderer.Synced.applyEdit
   Renderer.Synced.dropFar
+  Renderer.Synced.reset
   Renderer.Synced.draw
   Renderer.Synced.scene_sound
   Renderer.Synced.scene_complete
@@ -194,3 +196,10 @@ open LeanMc
   Inventory.count_take
   Inventory.NoAir.add
   Inventory.NoAir.take
+
+-- Saving and loading
+#assert_standard_axioms
+  SaveData.decode?_encode
+  World.get_setMany_toList
+  SaveData.restore?_snapshot
+  SaveData.restore?_decode_encode

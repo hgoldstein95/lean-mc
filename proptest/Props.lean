@@ -245,7 +245,32 @@ def main (args : List String) : IO UInt32 := do
     (fun ops => s!"{ops.length} operations: {repr ops}")
     (fun ops => pure (renderFault ops))) && ok
 
+  ok := (← holds "any saved game survives being written as text and read back" (runs * 3)
+    genSaveData shrinkSaveData (fun d => s!"{repr d}")
+    (fun d => pure <|
+      if SaveData.decode? d.encode != some d then some "the integers do not decode to it"
+      else if SaveData.ofText? d.toText != some d then some "the text does not read back to it"
+      else none)) && ok
+
+  -- Change one integer of a valid save: it must be refused or still mean exactly what it says.
+  ok := (← holds "a save with one number changed is refused or re-encodes to itself" (runs * 3)
+    (do
+      let d ← genSaveData
+      let ints := d.encode
+      let i ← chooseNat 0 200
+      return (ints.set (i % ints.length) (← genWideInt)))
+    (shrinkList shrinkInt) (fun ints => s!"{ints}")
+    (fun ints => pure <|
+      match SaveData.decode? ints with
+      | none => none
+      | some d => if d.encode == ints then none else some s!"it decodes to {repr d}")) && ok
+
   -- Deliberately false properties: the tests must be able to fail, and fail small.
+  ok := (← refutes "self-check: some saved games do not load" runs
+    genSaveData shrinkSaveData (fun d => d.edits.length) 1 (fun d => s!"{repr d}")
+    (fun d => pure (if d.restore?.isNone then some "refused" else none))) && ok
+
+
   ok := (← refutes "self-check: a dig press can go unanswered within one frame" (runs * 2)
     (listOfMaxLength 120 genFrame) (shrinkList shrinkFrame) List.length 1 showFrames
     (fun frames => pure <|
