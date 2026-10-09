@@ -1,4 +1,5 @@
 import PropTest.Shrink
+import PropTest.Spec
 import Basalt.IO
 
 /-!
@@ -218,6 +219,23 @@ def renderFault (ops : List RenderOp) : Option String :=
         some "the scene is not one draw per meshed chunk"
       else none
 
+/--
+The first generator whose draw falls outside its predicate in `PropTest.Spec`,
+if any. `PropTestProofs` proves none can, of the generators as distributions;
+this checks the same of what the real random source makes them produce.
+-/
+def specFault
+    (sample : Frame × (UInt64 × List Command) × (Vec3 × Vec3) × SaveData × RenderOp × GpuCmd) :
+    Option String :=
+  let (frame, seeded, ray, save, op, cmd) := sample
+  if !decide (Spec.FrameOK frame) then some "genFrame left its predicate"
+  else if !decide (Spec.SeededCommandsOK seeded) then some "genSeededCommands left its predicate"
+  else if !decide (Spec.RayOK ray) then some "genRay left its predicate"
+  else if !decide (Spec.SaveOK save) then some "genSaveData left its predicate"
+  else if !decide (Spec.RenderOpOK op) then some "genRenderOp left its predicate"
+  else if !decide (Spec.GpuCmdOK cmd) then some "genGpuCmd left its predicate"
+  else none
+
 def parseArgs (runs seed : Nat) : List String → Nat × Nat
   | "--runs" :: n :: rest => parseArgs (n.toNat?.getD runs) seed rest
   | "--seed" :: n :: rest => parseArgs runs (n.toNat?.getD seed) rest
@@ -241,18 +259,18 @@ def main (args : List String) : IO UInt32 := do
   let flatSolid := Terrain.flatWorld.solid
 
   ok := (← holds "the generated world stays sound under any commands" (runs / 4)
-    (do return (← elements [(2026 : UInt64), 1, 7, 99], ← listOfMaxLength 60 genCommand))
+    genSeededCommands
     (shrinkPair (fun _ => []) (shrinkList shrinkCommand))
     (fun (seed, cmds) => s!"seed {seed}, {showCommands cmds}")
     (fun (seed, cmds) => pure (unsoundness { Terrain.initial seed with inventory := kit } cmds)))
     && ok
 
   ok := (← holds "the flat world stays sound under any commands" runs
-    (listOfMaxLength 150 genCommand) (shrinkList shrinkCommand) showCommands
+    (genCommands 150) (shrinkList shrinkCommand) showCommands
     (fun cmds => pure (unsoundness flat.state cmds))) && ok
 
   ok := (← holds "no press is lost, repeated or invented at any frame rate" (runs * 2)
-    (listOfMaxLength 120 genFrame) (shrinkList shrinkFrame) showFrames
+    genFrames (shrinkList shrinkFrame) showFrames
     (fun frames => pure (pacingFault flat frames))) && ok
 
   ok := (← holds "the targeting walk visits exactly the cells the segment passes through"
@@ -267,7 +285,7 @@ def main (args : List String) : IO UInt32 := do
       if hit == first then none else some s!"cast gave {repr hit}, the walk gives {repr first}")) && ok
 
   ok := (← holds "the planner keeps the model shim showing the world" (runs / 2)
-    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp)
+    genRenderOps (shrinkList shrinkRenderOp)
     (fun ops => s!"{ops.length} operations: {repr ops}")
     (fun ops => pure (renderFault ops))) && ok
 
@@ -280,16 +298,18 @@ def main (args : List String) : IO UInt32 := do
 
   -- Change one integer of a valid save: it must be refused or still mean exactly what it says.
   ok := (← holds "a save with one number changed is refused or re-encodes to itself" (runs * 3)
-    (do
-      let d ← genSaveData
-      let ints := d.encode
-      let i ← chooseNat 0 200
-      return (ints.set (i % ints.length) (← genWideInt)))
+    genMutatedSave
     (shrinkList shrinkInt) (fun ints => s!"{ints}")
     (fun ints => pure <|
       match SaveData.decode? ints with
       | none => none
       | some d => if d.encode == ints then none else some s!"it decodes to {repr d}")) && ok
+
+  ok := (← holds "every generator draws only what it is proved to produce" (runs * 2)
+    (do return (← genFrame, ← genSeededCommands, ← genRay, ← genSaveData, ← genRenderOp,
+      ← genGpuCmd))
+    (fun _ => []) (fun _ => "one draw from each generator") (fun sample => pure (specFault sample)))
+    && ok
 
   -- Deliberately false properties: the tests must be able to fail, and fail small.
   ok := (← refutes "self-check: some saved games do not load" runs
@@ -298,7 +318,7 @@ def main (args : List String) : IO UInt32 := do
 
 
   ok := (← refutes "self-check: a dig press can go unanswered within one frame" (runs * 2)
-    (listOfMaxLength 120 genFrame) (shrinkList shrinkFrame) List.length 1 showFrames
+    genFrames (shrinkList shrinkFrame) List.length 1 showFrames
     (fun frames => pure <|
       if frames.any (·.dig) && (flat.play frames).1.pending.dig then some "a dig is waiting"
       else none)) && ok
@@ -310,25 +330,25 @@ def main (args : List String) : IO UInt32 := do
       else none)) && ok
 
   ok := (← refutes "self-check: commands can change a block" runs
-    (listOfMaxLength 150 genCommand) (shrinkList shrinkCommand) List.length 1 showCommands
+    (genCommands 150) (shrinkList shrinkCommand) List.length 1 showCommands
     (fun cmds => pure <|
       if (flat.state.run cmds).world.edits.size > 0 then some "the world changed" else none)) && ok
 
   ok := (← refutes "self-check: the planner empties a slot" runs
-    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 3
+    genRenderOps (shrinkList shrinkRenderOp) List.length 3
     (fun ops => s!"{repr ops}")
     (fun ops => pure <|
       if (sentCommands ops).any (fun | .unload _ => true | _ => false) then some "a slot was emptied"
       else none)) && ok
 
   ok := (← refutes "self-check: the planner reuses an emptied slot" (runs * 2)
-    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 5
+    genRenderOps (shrinkList shrinkRenderOp) List.length 5
     (fun ops => s!"{repr ops}")
     (fun ops => pure <|
       if reusesSlot (sentCommands ops) then some "an emptied slot was filled again" else none)) && ok
 
   ok := (← refutes "self-check: an edit touches the chunk above or below" runs
-    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 1
+    genRenderOps (shrinkList shrinkRenderOp) List.length 1
     (fun ops => s!"{repr ops}")
     (fun ops => pure <|
       if ops.any (fun | .edit p _ => (dirtyChunks p).any (·.y != p.chunkPos.y) | _ => false) then
@@ -336,14 +356,14 @@ def main (args : List String) : IO UInt32 := do
       else none)) && ok
 
   ok := (← refutes "self-check: a dig and a place can wait together, and the place waits a tick" (runs * 2)
-    (listOfMaxLength 120 genFrame) (shrinkList shrinkFrame) List.length 4 showFrames
+    genFrames (shrinkList shrinkFrame) List.length 4 showFrames
     (fun frames => pure <|
       if (flat.play frames).1.pending.place && (flat.play frames).2.any (·.dig) then
         some "a place is waiting behind a dig"
       else none)) && ok
 
   ok := (← refutes "self-check: an edit at a chunk edge dirties more than one chunk" runs
-    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 1
+    genRenderOps (shrinkList shrinkRenderOp) List.length 1
     (fun ops => s!"{repr ops}")
     (fun ops => pure <|
       if ops.any (fun | .edit p _ => (dirtyChunks p).length > 1 | _ => false) then

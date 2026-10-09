@@ -6,8 +6,9 @@ Property-based tests for lean-mc, built on basalt.
 
 This is a separate package so that the game itself does not depend on Mathlib,
 which basalt needs. Build the game first (`lake build` in the parent), then
-here run `lake exe cache get` once, `lake test` for the pure properties, and
-`lake exe native` for the tests that compare the real shim with its model.
+here run `lake exe cache get` once, `lake test` for the pure properties,
+`lake exe native` for the tests that compare the real shim with its model, and
+`lake build` to check the proofs that the generators are correct.
 -/
 
 package proptest
@@ -17,6 +18,14 @@ require leanmc from ".."
 require basalt from git "https://github.com/hgoldstein95/basalt" @ "08f06f180c8517f9429fbd9ce5ac0a7e5c51dd21"
 
 lean_lib PropTest
+
+/--
+Proofs that the generators produce exactly what `PropTest.Spec` says. These
+import all of basalt, and with it Mathlib, so nothing the test executables
+link may import them.
+-/
+@[default_target]
+lean_lib PropTestProofs
 
 @[test_driver]
 lean_exe props where

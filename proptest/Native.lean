@@ -94,14 +94,14 @@ def nativeMain (args : List String) : IO UInt32 := do
   let mut ok := true
 
   ok := (← holds "the shim reads vertices the way the model says" (runs * 3)
-    (do genBytes (← chooseNat 0 200)) shrinkMesh
+    genDecodeBytes shrinkMesh
     (fun v => s!"{v.size} bytes: {v.data.toList}") decodeFault) && ok
 
   ok := (← holds "the shim's mesh table and scene match the model after any commands" runs
-    (listOfMaxLength 40 genGpuCmd) (shrinkList shrinkGpuCmd) showCmds (storeFault Gpu.exec)) && ok
+    genGpuCmds (shrinkList shrinkGpuCmd) showCmds (storeFault Gpu.exec)) && ok
 
   ok := (← refutes "self-check: a model that forgets to unload is caught" runs
-    (listOfMaxLength 40 genGpuCmd) (shrinkList shrinkGpuCmd) List.length 2 showCmds
+    genGpuCmds (shrinkList shrinkGpuCmd) List.length 2 showCmds
     (storeFault forgetfulExec)) && ok
 
   debugReset

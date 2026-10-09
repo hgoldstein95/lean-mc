@@ -13,6 +13,10 @@ They aim for the awkward cases on purpose: frames far shorter and far longer
 than a tick, speeds at and beyond the limit, looks that reach past the player's
 reach, mesh commands that misuse slots. Wide inputs are fine because every
 generator here has a shrinker in `PropTest.Shrink`.
+
+Every generator a property runs is a named definition here, with no generator
+bound locally inside another, so that each has a law of its own: `PropTest.Spec`
+says exactly which values each can produce, and `PropTestProofs` proves it.
 -/
 
 open LeanMc
@@ -90,6 +94,14 @@ def genCommand : G Command := do
     action := ← genAction
     select := ← genSelect }
 
+/-- A run of at most `n` commands. -/
+def genCommands (n : Nat) : G (List Command) :=
+  listOfMaxLength n genCommand
+
+/-- A world seed and a run of commands to play in the world generated from it. -/
+def genSeededCommands : G (UInt64 × List Command) := do
+  return (← elements [(2026 : UInt64), 1, 7, 99], ← genCommands 60)
+
 /--
 How long a frame took, in units of 1/60000 s. A tick is 1000. Most of the
 weight is on frames that run no tick at all, or straddle a tick boundary; the
@@ -114,6 +126,10 @@ def genFrame : G Frame := do
     select := ← genSelect
     fly := ← chance 8
     elapsed := ← genElapsed }
+
+/-- A run of at most 120 frames. -/
+def genFrames : G (List Frame) :=
+  listOfMaxLength 120 genFrame
 
 /--
 A ray near the flat world's surface and pillars: where it starts and how far it
@@ -143,29 +159,55 @@ def genAnyBlock : G Block :=
 def genSlot9 : G (Fin 9) := do
   return ⟨(← chooseNat 0 8) % 9, Nat.mod_lt _ (by decide)⟩
 
-def genInventory : G Inventory := do
-  let mut slots : Vector (Option Stack) 9 := Vector.replicate 9 none
-  for i in List.finRange 9 do
-    if ← chance 50 then
-      let extra : Fin 64 := ⟨(← chooseNat 0 63) % 64, Nat.mod_lt _ (by decide)⟩
-      slots := slots.set i (some ⟨← genAnyBlock, extra⟩)
-  return ⟨slots⟩
+/-- One slot of an inventory: empty half the time, otherwise a stack of any block and any size. -/
+def genStackSlot : G (Option Stack) := do
+  if ← chance 50 then
+    let extra ← chooseNat 0 63
+    let block ← genAnyBlock
+    return some ⟨block, ⟨extra % 64, Nat.mod_lt _ (by decide)⟩⟩
+  else
+    return none
 
-/-- Any saved game at all, sound or not: the encoding has to cope with every one. -/
-def genSaveData : G SaveData := do
-  let vec : G Vec3 := do return ⟨← genWideInt, ← genWideInt, ← genWideInt⟩
+def genInventory : G Inventory := do
+  return ⟨#v[← genStackSlot, ← genStackSlot, ← genStackSlot, ← genStackSlot, ← genStackSlot,
+    ← genStackSlot, ← genStackSlot, ← genStackSlot, ← genStackSlot]⟩
+
+/-- A position or velocity with each component an integer of any size. -/
+def genWideVec : G Vec3 := do
+  return ⟨← genWideInt, ← genWideInt, ← genWideInt⟩
+
+/-- A world seed: usually small, sometimes at the edges of 32 and 64 bits. -/
+def genSeed : G UInt64 := do
   let seed ← frequency! [
     (3, fun _ => chooseNat 0 100),
     (1, fun _ => elements [18446744073709551615, 9223372036854775808, 4294967296])
   ] (by simp)
-  let edits ← listOfMaxLength 12 (do
-    return ((⟨← genWideInt, ← genWideInt, ← genWideInt⟩ : BlockPos), ← genAnyBlock))
+  return seed.toUInt64
+
+/-- One saved block change, anywhere at all. -/
+def genEdit : G (BlockPos × Block) := do
+  return ((⟨← genWideInt, ← genWideInt, ← genWideInt⟩ : BlockPos), ← genAnyBlock)
+
+/-- A saved player: anywhere, at any speed, with any claim about the ground. -/
+def genPlayer : G Player := do
+  return { pos := ← genWideVec, vel := ← genWideVec, onGround := ← chance 50, flying := ← chance 50 }
+
+/-- Any saved game at all, sound or not: the encoding has to cope with every one. -/
+def genSaveData : G SaveData := do
+  let seed ← genSeed
+  let edits ← listOfMaxLength 12 genEdit
   return {
-    seed := seed.toUInt64
-    player := { pos := ← vec, vel := ← vec, onGround := ← chance 50, flying := ← chance 50 }
+    seed
+    player := ← genPlayer
     inventory := ← genInventory
     selected := ← genSlot9
     edits }
+
+/-- A valid save's integers with one of them replaced by an integer of any size. -/
+def genMutatedSave : G (List Int) := do
+  let d ← genSaveData
+  let i ← chooseNat 0 200
+  return d.encode.set (i % d.encode.length) (← genWideInt)
 
 /-! ## Renderer operations -/
 
@@ -201,19 +243,28 @@ def genEditY : G Int :=
     (1, fun _ => elements [-1, 0])
   ] (by simp)
 
+/-- A horizontal coordinate of an edit: on a chunk boundary if `edge`, else anywhere nearby. -/
+def genEditCoord (edge : Bool) : G Int :=
+  if edge then elements [-17, -16, -1, 0, 15, 16, 31] else chooseInt (-20) 34
+
+/-- Where an edit lands: often on a chunk boundary, where it touches two or three chunks. -/
+def genEditPos : G BlockPos := do
+  let edge ← chance 40
+  return ⟨← genEditCoord edge, ← genEditY, ← genEditCoord edge⟩
+
 def genRenderOp : G RenderOp :=
   frequency! [
     (5, fun _ => RenderOp.mesh <$> genChunk),
-    (5, fun _ => do
-      -- Often on a chunk boundary, where an edit touches two or three chunks.
-      let edge ← chance 40
-      let coord : G Int := if edge then elements [-17, -16, -1, 0, 15, 16, 31] else chooseInt (-20) 34
-      return .edit ⟨← coord, ← genEditY, ← coord⟩ (← genBlock)),
+    (5, fun _ => do return .edit (← genEditPos) (← genBlock)),
     (2, fun _ => RenderOp.dropFar <$> genCentre),
     (2, fun _ => do
       return .draw ⟨← chooseInt (-2000000) 2000000, ← chooseInt 0 1000000,
         ← chooseInt (-2000000) 2000000⟩)
   ] (by simp)
+
+/-- A run of at most 30 renderer operations. -/
+def genRenderOps : G (List RenderOp) :=
+  listOfMaxLength 30 genRenderOp
 
 /-! ## Commands to the shim -/
 
@@ -251,5 +302,13 @@ def genGpuCmd : G GpuCmd :=
           ← chooseInt (-4000000) 4000000⟩),
     (1, fun _ => pure .beginScene)
   ] (by simp)
+
+/-- A run of at most 40 commands to the shim. -/
+def genGpuCmds : G (List GpuCmd) :=
+  listOfMaxLength 40 genGpuCmd
+
+/-- Bytes for the shim to read as vertices: any number of them up to 200, whole vertices or not. -/
+def genDecodeBytes : G ByteArray := do
+  genBytes (← chooseNat 0 200)
 
 end PropTest
