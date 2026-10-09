@@ -7,7 +7,9 @@ import LeanMc.Core.Inventory
   and every other count is unchanged.
 * **Taking removes exactly one.** After `take`, the count of the block taken is
   one less and every other count is unchanged.
-* **Air is never carried**, provided it is never picked up.
+* **What is never picked up is never carried.** An inventory that lacks some
+  kind of block still lacks it after picking up any other kind, or after
+  taking anything out. The game uses this for air and for bedrock.
 
 That a stack holds between 1 and 64 blocks needs no theorem: the type allows
 nothing else.
@@ -109,16 +111,24 @@ theorem count_take {inv inv' : Inventory} {i : Fin 9} {b : Block}
     rw [hs] at h1
     omega
 
-/-- No slot holds a stack of air. -/
-def NoAir (inv : Inventory) : Prop :=
-  ∀ (i : Fin 9) (s : Stack), inv.slots[i] = some s → s.block ≠ .air
+/-- No slot holds a stack of `b`. -/
+def Lacks (inv : Inventory) (b : Block) : Prop :=
+  ∀ (i : Fin 9) (s : Stack), inv.slots[i] = some s → s.block ≠ b
 
-theorem noAir_empty : ({} : Inventory).NoAir := by
+/-- No slot holds a stack of air. -/
+abbrev NoAir (inv : Inventory) : Prop :=
+  inv.Lacks .air
+
+theorem lacks_empty (b : Block) : ({} : Inventory).Lacks b := by
   intro i s h
   simp at h
 
-theorem NoAir.set {inv : Inventory} (h : inv.NoAir) (i : Fin 9) {v : Option Stack}
-    (hv : ∀ s, v = some s → s.block ≠ .air) : (⟨inv.slots.set i v⟩ : Inventory).NoAir := by
+theorem noAir_empty : ({} : Inventory).NoAir :=
+  lacks_empty .air
+
+theorem Lacks.set {inv : Inventory} {b : Block} (h : inv.Lacks b) (i : Fin 9)
+    {v : Option Stack} (hv : ∀ s, v = some s → s.block ≠ b) :
+    (⟨inv.slots.set i v⟩ : Inventory).Lacks b := by
   intro j s hs
   have hget : (inv.slots.set i v)[j] = if i.val = j.val then v else inv.slots[j] := by
     simp [Vector.getElem_set]
@@ -127,8 +137,9 @@ theorem NoAir.set {inv : Inventory} (h : inv.NoAir) (i : Fin 9) {v : Option Stac
   · exact hv s hs
   · exact h j s hs
 
-theorem NoAir.add {inv inv' : Inventory} {b : Block} (h : inv.NoAir) (hb : b ≠ .air)
-    (ha : inv.add b = some inv') : inv'.NoAir := by
+/-- Picking up a block other than `b` does not make the player carry `b`. -/
+theorem Lacks.add {inv inv' : Inventory} {b b' : Block} (h : inv.Lacks b) (hb : b' ≠ b)
+    (ha : inv.add b' = some inv') : inv'.Lacks b := by
   unfold Inventory.add at ha
   split at ha
   · cases ha
@@ -151,8 +162,9 @@ theorem NoAir.add {inv inv' : Inventory} {b : Block} (h : inv.NoAir) (hb : b ≠
         · cases hput
     · cases ha
 
-theorem NoAir.take {inv inv' : Inventory} {i : Fin 9} {b : Block} (h : inv.NoAir)
-    (ht : inv.take i = some (b, inv')) : b ≠ .air ∧ inv'.NoAir := by
+/-- What is taken out of an inventory lacking `b` is not `b`, and what is left still lacks it. -/
+theorem Lacks.take {inv inv' : Inventory} {i : Fin 9} {b b' : Block} (h : inv.Lacks b)
+    (ht : inv.take i = some (b', inv')) : b' ≠ b ∧ inv'.Lacks b := by
   unfold Inventory.take at ht
   split at ht
   · cases ht

@@ -36,6 +36,13 @@ theorem get_set (w : World) (p q : BlockPos) (b : Block) :
 @[simp] theorem terrain_set (w : World) (p : BlockPos) (b : Block) :
     (w.set p b).terrain = w.terrain := rfl
 
+/-- Nor does any list of writes. -/
+@[simp] theorem terrain_setMany (w : World) (edits : List (BlockPos × Block)) :
+    (w.setMany edits).terrain = w.terrain := by
+  induction edits generalizing w with
+  | nil => rfl
+  | cons e es ih => exact ih (w.set e.1 e.2)
+
 /-- A later write to the same position wins. -/
 theorem get_set_set (w : World) (p q : BlockPos) (a b : Block) :
     ((w.set p a).set p b).get q = (w.set p b).get q := by

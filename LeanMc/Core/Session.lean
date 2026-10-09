@@ -1,4 +1,5 @@
 import LeanMc.Core.Game
+import LeanMc.Core.Terrain
 import LeanMc.Proofs.Game
 
 /-!
@@ -12,7 +13,12 @@ ticks to run and what command each one gets.
 The delicate part is input that happens at an instant. A key or button going
 down is reported in one frame only, and that frame may be too short to contain
 a tick. So presses are held in `Pending` until a tick takes them.
-`LeanMc.Proofs.Session` shows that none is lost, repeated or invented.
+
+A tick digs or places, never both, so a dig and a place that are waiting
+together take a tick each: the dig goes first and the place waits for the next
+tick, in this frame or a later one. `LeanMc.Proofs.Session` shows that no press
+is lost, repeated or invented, and that every one is acted on by a tick of its
+own.
 
 Time is counted in whole units of 1/60000 of a second, so a tick is exactly
 `unitsPerTick` of them and the bookkeeping is exact.
@@ -63,6 +69,22 @@ def add (p : Pending) (f : Frame) : Pending where
   select := f.select <|> p.select
   fly := p.fly != f.fly
 
+/-- What the next tick does to the world: a waiting dig first, else a waiting place. -/
+def action (p : Pending) : Option Action :=
+  if p.dig then some .dig else if p.place then some .place else none
+
+/--
+What is still waiting once a tick has run: nothing, unless a dig and a place
+were both waiting, in which case the place still is.
+-/
+def next (p : Pending) : Pending where
+  place := p.dig && p.place
+
+/-- What is still waiting after `n` ticks. -/
+def after : Nat → Pending → Pending
+  | 0, p => p
+  | n + 1, p => after n p.next
+
 end Pending
 
 /--
@@ -78,6 +100,10 @@ structure Session where
   pending : Pending := {}
   /-- Time that has passed but has not yet been simulated; always less than a tick. -/
   debt : Nat := 0
+  /-- The seed the world's terrain was generated from, if it was generated from one. -/
+  seed : Option UInt64 := none
+  /-- The seed is the truth about the terrain, so a saved game cannot record the wrong one. -/
+  seeded : ∀ sd, seed = some sd → state.world.terrain = Terrain.generate sd := by simp
 
 /-- What the shell needs to know about a batch of ticks besides the resulting state. -/
 structure RunLog where
@@ -116,18 +142,22 @@ end State
 
 namespace Session
 
-/-- The command for the first tick of a frame: held keys plus every waiting press. -/
-def firstCommand (p : Pending) (f : Frame) : Command where
+/-- The command for a tick with `p` waiting: held keys, plus the presses this tick acts on. -/
+def tickCommand (p : Pending) (f : Frame) : Command where
   move := { f.move with toggleFly := p.fly }
   look := f.look
-  dig := p.dig
-  place := p.place
+  action := p.action
   select := p.select
 
-/-- The command for any later tick of the same frame: held keys only. -/
+/-- The command for a tick with nothing waiting: held keys only. -/
 def heldCommand (f : Frame) : Command where
   move := { f.move with toggleFly := false }
   look := f.look
+
+/-- The commands for `n` ticks of a frame that starts with `p` waiting. -/
+def tickCommands (f : Frame) : Nat → Pending → List Command
+  | 0, _ => []
+  | n + 1, p => tickCommand p f :: tickCommands f n p.next
 
 /-- Whole ticks of time available once this frame's time is added. -/
 def ticksOwed (s : Session) (f : Frame) : Nat :=
@@ -139,13 +169,14 @@ def ticksDue (s : Session) (f : Frame) : Nat :=
 
 /-- The commands this frame's ticks run, in order. -/
 def commands (s : Session) (f : Frame) : List Command :=
-  match s.ticksDue f with
-  | 0 => []
-  | n + 1 => firstCommand (s.pending.add f) f :: List.replicate n (heldCommand f)
+  tickCommands f (s.ticksDue f) (s.pending.add f)
 
-/-- Presses still waiting after the frame: all of them if no tick ran, none otherwise. -/
+/--
+Presses still waiting after the frame: all of them if no tick ran, and nothing
+after two ticks. After exactly one, only a place that gave way to a dig.
+-/
 def pendingAfter (s : Session) (f : Frame) : Pending :=
-  if s.ticksDue f = 0 then s.pending.add f else {}
+  (s.pending.add f).after (s.ticksDue f)
 
 /-- Time still owed after the frame. Time beyond the per-frame limit is dropped. -/
 def debtAfter (s : Session) (f : Frame) : Nat :=
@@ -157,6 +188,8 @@ def frame (s : Session) (f : Frame) : Session where
   sound := s.sound.run _
   pending := s.pendingAfter f
   debt := s.debtAfter f
+  seed := s.seed
+  seeded sd h := (State.run_terrain ..).trans (s.seeded sd h)
 
 /-- `frame`, also reporting what the shell must mirror: block changes and the last move. -/
 def frameLog (s : Session) (f : Frame) : Session × RunLog :=
@@ -164,7 +197,11 @@ def frameLog (s : Session) (f : Frame) : Session × RunLog :=
   ({ state := log.state
      sound := State.runLog_state s.state _ ▸ s.sound.run _
      pending := s.pendingAfter f
-     debt := s.debtAfter f }, log)
+     debt := s.debtAfter f
+     seed := s.seed
+     seeded := fun sd h =>
+      (congrArg (·.world.terrain) (State.runLog_state s.state (s.commands f))).trans
+        ((State.run_terrain ..).trans (s.seeded sd h)) }, log)
 
 /-- Advance through a sequence of frames, collecting every command that was run. -/
 def play (s : Session) : List Frame → Session × List Command

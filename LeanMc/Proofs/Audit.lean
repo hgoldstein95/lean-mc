@@ -6,6 +6,7 @@ import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
+import LeanMc.Proofs.RayGeometry
 import LeanMc.Proofs.Inventory
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
@@ -18,9 +19,15 @@ import LeanMc.Proofs.Generated
 /-!
 # Axiom audit
 
-The headline theorems, checked to rest on nothing but Lean's three standard
-axioms. In particular this rules out `sorry` and `native_decide`. Building this
-module is the check: a violation is a build error.
+Every theorem in the project, checked to rest on nothing but Lean's three
+standard axioms. In particular this rules out `sorry` and `native_decide`.
+Building this module is the check: a violation is a build error.
+
+There are two checks. The sweep at the end covers every theorem declared in any
+`LeanMc.*` module this one imports, so a theorem added later is checked without
+anyone remembering to list it; it also fails if a proof module exists that is
+not imported here. The lists before it name the headline theorems, so that
+renaming or deleting one of those is a build error too.
 -/
 
 open Lean Elab Command in
@@ -32,6 +39,37 @@ elab "#assert_standard_axioms " ids:ident+ : command => do
     for ax in ← collectAxioms name do
       unless allowed.contains ax do
         throwErrorAt id "{name} depends on the non-standard axiom {ax}"
+
+open Lean Elab Command in
+/--
+Fail unless every theorem declared in an imported module whose name starts with
+`root` depends only on Lean's standard axioms, and unless every `.lean` file
+under `dir` is among those modules.
+-/
+elab "#assert_all_standard_axioms " root:ident dir:str : command => do
+  let env ← getEnv
+  let allowed := [``propext, ``Classical.choice, ``Quot.sound]
+  let rootName := root.getId
+  let theorems : Array Name := env.constants.fold (init := #[]) fun acc n ci =>
+    match ci, env.getModuleIdxFor? n with
+    | .thmInfo _, some idx =>
+      if rootName.isPrefixOf env.header.moduleNames[idx.toNat]! then acc.push n else acc
+    | _, _ => acc
+  if theorems.isEmpty then
+    throwErrorAt root "no theorems found in modules under {rootName}"
+  for n in theorems do
+    for ax in ← collectAxioms n do
+      unless allowed.contains ax do
+        throwErrorAt root "{n} depends on the non-standard axiom {ax}"
+  -- Every proof module on disk must be one of the modules swept.
+  let imported := env.header.moduleNames.map (·.toString)
+  for entry in ← (System.FilePath.mk dir.getString).readDir do
+    if entry.path.extension == some "lean" then
+      let stem := (entry.fileName.dropEnd 5).toString
+      let mod := s!"{dir.getString.replace "/" "."}.{stem}"
+      unless imported.contains mod || mod == (← getMainModule).toString do
+        throwErrorAt dir "{mod} is not imported by the audit, so its theorems are not checked"
+  logInfo m!"{theorems.size} theorems under {rootName} rest on the standard axioms only"
 
 open LeanMc
 
@@ -80,6 +118,10 @@ open LeanMc
 
 -- Meshing
 #assert_standard_axioms
+  Dir.corner_on_face
+  Dir.winding
+  Dir.uv_upright
+  size_meshChunk_le
   mem_chunkFaces
   face_mem_chunkFaces
   nodup_chunkFaces
@@ -107,7 +149,16 @@ open LeanMc
   Player.step_onGround
   Player.step_above_floor
   Player.step_shift
+  Player.contact_free
+  Player.moveAxis_flush
+  Player.moveAxis_of_not_blocked
+  Player.moveAxis_flush_of_speed
+  Player.step_speedBounded
+  Player.intent_airborne
   Player.settle_free
+  Player.settle_grounded
+  Terrain.spawn_grounded
+  Terrain.initial_onGround
   World.step_translate
   Terrain.generate_above_column
   Terrain.spawn_free
@@ -119,10 +170,30 @@ open LeanMc
   Ray.cast_face_clear
   Ray.cast_walk
   Ray.cast_within
+  Ray.cast_face_within
+  Ray.cast_face_none
   Ray.cast_none
+  Ray.cast_path
+  Ray.cast_touches
+  Ray.cast_timed
+  Ray.cast_none_path
+  Ray.Path.walk
 
 -- The game
 #assert_standard_axioms
+  State.reachVector_bounds
+  State.reachVector_of_within
+  State.reachVector_of_long
+  State.target_path
+  State.target_touches
+  State.run_conserves
+  State.step_noBedrock
+  State.Sound.target_face
+  State.Sound.edit_place
+  State.Sound.step_bedrock_iff
+  State.Sound.intent_airborne
+  State.Same.step
+  State.Same.run
   State.edit_cases
   State.edit_near
   State.step_changes_at_most_one
@@ -140,6 +211,19 @@ open LeanMc
 
 -- Pacing: frames, ticks and input
 #assert_standard_axioms
+  Command.not_dig_and_place
+  State.runLog_edits
+  Session.frameLog_edits
+  Session.frame_dig_exact
+  Session.frame_place_exact
+  Session.frame_pending_quiet
+  Session.frame_pending_cleared_of_not_both
+  Session.drop_two_commands
+  Session.play_place_count
+  Session.play_selectIntent
+  Session.play_flyIntent
+  Session.play_terrain
+  Session.play_seed
   State.runLog_state
   Session.frameLog_fst
   Session.tail_commands
@@ -183,6 +267,9 @@ open LeanMc
   Renderer.Synced.remesh
   Renderer.Synced.drop
   Renderer.Synced.applyEdit
+  Renderer.Synced.applyEdits
+  Renderer.Synced.frame
+  Renderer.slots_dropFar_of_contains
   Renderer.Synced.dropFar
   Renderer.Synced.reset
   Renderer.Synced.draw
@@ -194,12 +281,19 @@ open LeanMc
   Stack.count_bounds
   Inventory.count_add
   Inventory.count_take
-  Inventory.NoAir.add
-  Inventory.NoAir.take
+  Inventory.Lacks.add
+  Inventory.Lacks.take
 
 -- Saving and loading
 #assert_standard_axioms
   SaveData.decode?_encode
+  SaveData.encode_of_decode?
+  SaveData.decode?_injective
   World.get_setMany_toList
   SaveData.restore?_snapshot
   SaveData.restore?_decode_encode
+  SaveData.restore?_snapshot_run
+  Terrain.session_save_load
+
+-- Everything else: every theorem in every module of the project.
+#assert_all_standard_axioms LeanMc "LeanMc/Proofs"

@@ -188,7 +188,7 @@ def main : IO UInt32 := do
   let flatWorld := World.new Terrain.flat
   let standing : State := { world := flatWorld, player := dropped, inventory := carrying .cobble 3 }
   let down : Vec3 := ⟨0, -327680, 0⟩
-  let dug := standing.step { look := down, dig := true }
+  let dug := standing.step { look := down, action := some .dig }
   ok := (← check "digging removes the block being looked at and nothing else" <|
     standing.target down == some ⟨⟨4, 8, 4⟩, some .yp⟩
       && dug.world.get ⟨4, 8, 4⟩ == .air && dug.world.get ⟨4, 7, 4⟩ == .dirt
@@ -202,14 +202,14 @@ def main : IO UInt32 := do
     dug.inventory.count .grass == 1 && dug.inventory.count .cobble == 3
       && dug.inventory.count .dirt == 0) && ok
 
-  let buried := standing.step { look := down, place := true }
+  let buried := standing.step { look := down, action := some .place }
   ok := (← check "placing where the player stands is refused" <|
-    (standing.edit { look := down, place := true }).isNone
+    (standing.edit { look := down, action := some .place }).isNone
       && buried.inventory.count .cobble == 3
       && buried.world.get ⟨4, 9, 4⟩ == .air) && ok
 
   let ahead : Vec3 := ⟨196608, -150000, 0⟩
-  let placed := standing.step { look := ahead, place := true }
+  let placed := standing.step { look := ahead, action := some .place }
   let cell := (standing.target ahead).bind fun hit => hit.face.map hit.block.step
   ok := (← check "placing fills the empty cell in front of the targeted face" <|
     match cell with
@@ -221,16 +221,16 @@ def main : IO UInt32 := do
 
   let empty : State := { standing with inventory := {} }
   ok := (← check "placing with an empty slot does nothing" <|
-    (empty.edit { look := ahead, place := true }).isNone
-      && (standing.edit { look := ahead, place := true, select := some 5 }).isNone) && ok
+    (empty.edit { look := ahead, action := some .place }).isNone
+      && (standing.edit { look := ahead, action := some .place, select := some 5 }).isNone) && ok
 
   -- Fill every slot with a full stack of stone; there is then no room for grass.
   let full : State := { standing with inventory := carrying .stone (9 * 64) }
   ok := (← check "a full inventory holds nine stacks of 64 and refuses to dig" <|
     full.inventory.count .stone == 576 && (carrying .stone 1000).count .stone == 576
       && (List.finRange 9).all (fun i => (full.inventory.stack i).map (·.count) == some 64)
-      && (full.edit { look := down, dig := true }).isNone
-      && (full.step { look := down, dig := true }).world.get ⟨4, 8, 4⟩ == .grass) && ok
+      && (full.edit { look := down, action := some .dig }).isNone
+      && (full.step { look := down, action := some .dig }).world.get ⟨4, 8, 4⟩ == .grass) && ok
 
   let mixed := (carrying .stone 70).add .dirt |>.bind (·.add .stone)
   ok := (← check "a stack rolls over at 64 and later blocks join the open stack" <|
@@ -246,13 +246,18 @@ def main : IO UInt32 := do
     { world := shaft, player := { pos := ⟨block 4 + 32768, block 1, block 4 + 32768⟩ } }
   ok := (← check "bedrock cannot be dug" <|
     atBottom.target down == some ⟨⟨4, 0, 4⟩, some .yp⟩
-      && (atBottom.step { look := down, dig := true }).world.get ⟨4, 0, 4⟩ == .bedrock) && ok
+      && (atBottom.step { look := down, action := some .dig }).world.get ⟨4, 0, 4⟩ == .bedrock) && ok
 
   let high : State :=
     { world := flatWorld
       player := { pos := ⟨block 4 + 32768, block 20, block 4 + 32768⟩, flying := true } }
   ok := (← check "a block out of reach is not targeted, however long the look vector" <|
     (high.target ⟨0, -block 1000, 0⟩).isNone) && ok
+
+  ok := (← check "a look too long for the reach is shortened along its own direction, not bent" <|
+    State.reachVector ⟨3276800, 327680, 0⟩ == ⟨327680, 32768, 0⟩
+      && State.reachVector ⟨-655360, 0, 65536⟩ == ⟨-327680, 0, 32768⟩
+      && State.reachVector ahead == ahead) && ok
 
   -- Random play in the generated world, checked every tick.
   let kinds : List Block :=
@@ -261,7 +266,7 @@ def main : IO UInt32 := do
     let r := noise (i + 77777)
     let part (k : Nat) : Int := ((r / k % 655361 : Nat) : Int) - 327680
     { move := randomInput i, look := ⟨part 3, part 5 - 150000, part 9⟩,
-      dig := r % 4 == 0, place := r % 4 == 1
+      action := if r % 4 == 0 then some .dig else if r % 4 == 1 then some .place else none
       select := if r % 7 == 0 then some ⟨r / 31 % 9, Nat.mod_lt _ (by decide)⟩ else none }
   let play := (List.range 5000).foldl (init := (Terrain.initial seed, true, 0))
     fun (s, fine, edits) i =>
@@ -311,6 +316,35 @@ def main : IO UInt32 := do
   ok := (← check "a long frame runs several ticks but digs once" <|
     long.2.length == 5 && digs long.2 == 1 && long.1.debt == 300) && ok
 
+  -- A dig and a place waiting together each get a tick: the dig first, the place on the next.
+  let some stocked := Session.start? Terrain.flatWorld Terrain.flatWorld_floor dropped
+      (carrying .cobble 3)
+    | IO.println "FAIL  a session starts for a player carrying cobble"
+      return 1
+  let places (cmds : List Command) : Nat := cmds.countP (·.place)
+  let oneTick := stocked.play [{ look := ahead, dig := true, place := true, elapsed := 1000 }]
+  let nextTick := oneTick.1.play [{ look := ahead, elapsed := 1000 }]
+  ok := (← check "a dig and a place pressed together are both acted on, a tick apart" <|
+    digs oneTick.2 == 1 && places oneTick.2 == 0 && oneTick.1.pending.place
+      && !oneTick.1.pending.dig && oneTick.1.state.inventory.count .cobble == 3
+      && digs nextTick.2 == 0 && places nextTick.2 == 1 && !nextTick.1.pending.place
+      && nextTick.1.state.inventory.count .cobble == 2
+      && nextTick.1.state.inventory.count .grass == 1) && ok
+
+  let twoTicks := stocked.play [{ look := ahead, dig := true, place := true, elapsed := 2000 }]
+  ok := (← check "and within one frame if it runs two ticks" <|
+    twoTicks.2.map (·.action) == [some .dig, some .place] && twoTicks.1.pending == {}
+      && twoTicks.1.state.inventory.count .cobble == 2) && ok
+
+  let crowded := Session.start? Terrain.flatWorld Terrain.flatWorld_floor dropped
+    (carrying .cobble (9 * 64))
+  ok := (← check "a dig refused for lack of room does not swallow a place pressed with it" <|
+    match crowded with
+    | some s =>
+      let after := (s.play [{ look := ahead, dig := true, place := true, elapsed := 2000 }]).1
+      after.state.world.edits.size == 1 && after.state.inventory.count .cobble == 575
+    | none => false) && ok
+
   let twice := fresh.play [{ quiet with fly := true }, { quiet with fly := true }, quiet, quiet]
   let once := fresh.play [{ quiet with fly := true }, quiet, quiet, quiet]
   ok := (← check "one fly press toggles flying and two cancel" <|
@@ -326,7 +360,9 @@ def main : IO UInt32 := do
     { move := cmd.move, look := cmd.look, dig := cmd.dig, place := cmd.place, select := cmd.select
       elapsed := 400 + noise i % 1200 }
   let played := ((Terrain.session seed).play playedFrames).1
-  let data := played.snapshot seed
+  let some data := played.snapshot
+    | IO.println "FAIL  a played game of a generated world can be saved"
+      return 1
   ok := (← check s!"a played game is saved with its edits ({data.edits.length}) and inventory" <|
     data.edits.length > 20 && (kinds.map data.inventory.count).sum > 0) && ok
 
@@ -358,6 +394,11 @@ def main : IO UInt32 := do
     ({ data with edits := data.edits ++ [(data.player.pos.blockPos, Block.stone)] }).restore?.isNone
       && ({ data with edits := data.edits ++ [((⟨3, 0, 3⟩ : BlockPos), Block.air)] }).restore?.isNone
       && ({ data with player := { data.player with pos := ⟨0, -70000, 0⟩ } }).restore?.isNone
-      && ({ data with inventory := carrying .air 1 }).restore?.isNone) && ok
+      && ({ data with inventory := carrying .air 1 }).restore?.isNone
+      -- Bedrock in hand, a speed beyond the limit, and a wrong claim about the ground.
+      && ({ data with inventory := carrying .bedrock 1 }).restore?.isNone
+      && ({ data with player := { data.player with vel := ⟨0, 70000, 0⟩ } }).restore?.isNone
+      && ({ data with player := { data.player with onGround := !data.player.onGround } }).restore?.isNone)
+    && ok
 
   return if ok then 0 else 1

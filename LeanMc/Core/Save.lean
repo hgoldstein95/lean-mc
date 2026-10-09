@@ -9,8 +9,12 @@ list of integers.
 
 Loading trusts nothing. The integers must parse, and the game they describe
 must pass the same checks as any other way of starting a session: an intact
-floor, a player who is clear of blocks and above the floor, and no air being
-carried. A file that fails is refused; it cannot produce an unsound game.
+floor; a player who is clear of blocks, above the floor, within the speed limit
+and right about whether they stand on something; and neither air nor bedrock
+being carried. A file that fails is refused; it cannot produce an unsound game.
+
+A session knows the seed its terrain came from, so saving takes no seed from
+outside: the file cannot name a world other than the one being played.
 
 `LeanMc.Proofs.Save` shows that encoding loses nothing, and that a game saved
 and loaded is the same game.
@@ -38,7 +42,10 @@ structure SaveData where
   player : Player
   inventory : Inventory
   selected : Fin 9
-  /-- Every block that differs from the generated terrain. -/
+  /--
+  Every cell that has ever been written, with what it holds now. A cell that
+  was dug and filled in again is listed although it matches the terrain.
+  -/
   edits : List (BlockPos × Block)
   deriving DecidableEq, Repr
 
@@ -132,8 +139,8 @@ def ofText? (text : String) : Option SaveData :=
   (lines.mapM String.toInt?).bind decode?
 
 /--
-Rebuild a session from saved data, if the data describes a sound game: the
-floor intact, the player clear and above it, and no air carried.
+Rebuild a session from saved data, if the data describes a sound game. The
+session remembers the seed, so it can be saved again.
 -/
 def restore? (d : SaveData) : Option Session :=
   if hfloor : d.edits.all (fun e => e.1.y != 0 || e.2 == .bedrock) then
@@ -155,20 +162,28 @@ def restore? (d : SaveData) : Option Session :=
           split
           · next heq => exact hall e List.mem_cons_self (by rw [← heq])
           · exact hbase x z)
-      d.player d.inventory d.selected
+      d.player d.inventory d.selected (some d.seed)
+      (fun sd h => by
+        cases h
+        rw [World.terrain_setMany]
+        rfl)
   else none
 
 end SaveData
 
 namespace Session
 
-/-- The data to save for a session of the world generated from `seed`. -/
-def snapshot (s : Session) (seed : UInt64) : SaveData where
-  seed
-  player := s.state.player
-  inventory := s.state.inventory
-  selected := s.state.selected
-  edits := s.state.world.edits.toList
+/--
+The data to save for a session, if its world was generated from a seed. The
+seed is the session's own, which is proved to be its terrain's.
+-/
+def snapshot (s : Session) : Option SaveData :=
+  s.seed.map fun seed =>
+    { seed
+      player := s.state.player
+      inventory := s.state.inventory
+      selected := s.state.selected
+      edits := s.state.world.edits.toList }
 
 end Session
 

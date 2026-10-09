@@ -61,6 +61,22 @@ theorem spawnStart_free (seed : UInt64) : Player.Free (world seed).solid (spawnS
 theorem spawn_free (seed : UInt64) : Player.Free (world seed).solid (spawn seed) :=
   Player.settle_free 16 (spawnStart_free seed)
 
+/--
+**A new player stands on the ground.** Settling stops with something solid
+directly beneath: the search starts above the tallest tree and the ground is
+never more than nine blocks below that.
+-/
+theorem spawn_grounded (seed : UInt64) :
+    Player.blocked (world seed).solid ((spawn seed).add .y (-1)) = true := by
+  refine Player.settle_grounded 16 (spawnStart_free seed)
+    (by simp only [spawnStart]; omega) ⟨8, by decide, ?_⟩
+  refine Box.collides_eq_true_iff.mpr ⟨⟨0, height seed 0 0, 0⟩, ?_, ?_⟩
+  · simp only [Box.Overlaps, Player.box, Vec3.add, spawnStart, Player.halfWidth, Player.height,
+      maxTreeHeight]
+    omega
+  · simp only [World.solid, world_get]
+    exact generate_surface_isSolid seed 0 0
+
 /-- The generated world has a solid floor at height zero. -/
 theorem world_floor (seed : UInt64) (x z : Int) : (world seed).solid ⟨x, 0, z⟩ = true := by
   simp [World.solid, generate_bedrock, Block.isSolid]
@@ -80,10 +96,19 @@ theorem initial_sound (seed : UInt64) : (initial seed).Sound where
   free := spawn_free seed
   floor x z := by simp [initial, generate_bedrock]
   items := Inventory.noAir_empty
+  bedrock := Inventory.lacks_empty _
+  speed := by
+    simp only [Player.SpeedBounded, initial, Player.resting, Player.maxSpeed]
+    omega
+  grounded := rfl
   above := by
     have hb := height_bounds seed 0 0
     refine Player.settle_above_floor (world_floor seed) 16 ?_ ?_ <;>
       simp only [spawnStart, minHeight, maxTreeHeight] at hb ⊢ <;> omega
+
+/-- A new game starts with the player on the ground, and knowing it. -/
+theorem initial_onGround (seed : UInt64) : (initial seed).player.onGround = true :=
+  spawn_grounded seed
 
 /--
 **The game never goes wrong.** Whatever the seed and whatever commands are

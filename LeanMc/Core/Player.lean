@@ -155,6 +155,10 @@ def settle (solid : BlockPos → Bool) : Nat → Vec3 → Vec3
     let below := pos.add .y (-65536)
     if blocked solid below then pos else settle solid drop below
 
+/-- A player standing still at `pos`, who knows whether there is something to stand on. -/
+def resting (solid : BlockPos → Bool) (pos : Vec3) : Player :=
+  { pos, onGround := blocked solid (pos.add .y (-1)) }
+
 end Player
 
 end LeanMc

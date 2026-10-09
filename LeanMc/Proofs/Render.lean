@@ -1,5 +1,6 @@
 import LeanMc.Core.Render
 import LeanMc.Proofs.View
+import LeanMc.Proofs.Session
 
 /-!
 # Renderer theorems
@@ -15,6 +16,12 @@ Everything here is about the planner run against the `Gpu` model.
   unloads, every chunk the planner counts as meshed has exactly the world's
   mesh in its slot, or nothing to draw; and a frame's scene is exactly one draw
   of each such mesh, at its chunk's position relative to the eye.
+
+* **A frame keeps the picture right.** After a frame of the game, following the
+  block changes it reports leaves the planner and the graphics side in
+  agreement with the world the frame ended in.
+* **Nothing in view is dropped.** Dropping far chunks leaves every chunk in
+  view with the slot it had.
 
 Together with the meshing theorems, the scene the model ends up with is the
 visible faces of the world's loaded chunks. That the real shim behaves like the
@@ -601,6 +608,35 @@ theorem Synced.applyEdit {r : Renderer} {w : World} {g : Gpu} (h : Synced (fun _
     · exact absurd (List.mem_filter.mpr ⟨hd, hcon⟩) hn
   exact Std.HashMap.getElem?_eq_none_of_contains_eq_false hc
 
+/--
+**A run of edits keeps the picture right.** After the world changes at several
+blocks in turn and the planner follows each change, every meshed chunk holds
+exactly the mesh of the world as it ended up.
+-/
+theorem Synced.applyEdits {r : Renderer} {w : World} {g : Gpu}
+    (h : Synced (fun _ => False) r w g) (edits : List (BlockPos × Block)) :
+    Synced (fun _ => False) (r.applyEdits w edits).1 (w.setMany edits)
+      (g.run (r.applyEdits w edits).2) := by
+  induction edits generalizing r w g with
+  | nil => exact h
+  | cons e es ih =>
+    simp only [Renderer.applyEdits, Gpu.run_append]
+    exact ih (h.applyEdit e.1 e.2)
+
+/--
+**A frame keeps the picture right.** If the planner and the graphics side agree
+with the world before a frame, then after the frame's ticks have run, following
+the block changes the frame reports leaves them in agreement with the world
+the frame ended in. The report is all the renderer needs.
+-/
+theorem Synced.frame {r : Renderer} {s : Session} {g : Gpu}
+    (h : Synced (fun _ => False) r s.state.world g) (f : Frame) :
+    Synced (fun _ => False) (r.applyEdits s.state.world (s.frameLog f).2.edits.toList).1
+      (s.frameLog f).1.state.world
+      (g.run (r.applyEdits s.state.world (s.frameLog f).2.edits.toList).2) := by
+  rw [Session.frameLog_fst, ← Session.frameLog_edits]
+  exact h.applyEdits _
+
 theorem foldl_unload_valid {cache : ChunkCache} {w : World} (h : cache.Valid w)
     (cs : List ChunkPos) : (cs.foldl ChunkCache.unload cache).Valid w := by
   induction cs generalizing cache with
@@ -634,6 +670,19 @@ theorem slots_forEach_drop (cs : List ChunkPos) (r : Renderer) (c' : ChunkPos) :
       · simp [h2]
       · have : c' ≠ c := fun e => h2 e.symm
         simp [h1, h2, this]
+
+/--
+**Nothing in view is dropped.** Dropping far chunks leaves every chunk in view
+holding the slot it held, so loading and unloading never undo each other.
+-/
+theorem slots_dropFar_of_contains (r : Renderer) {view : ViewRange} {centre c : ChunkPos}
+    (h : view.contains centre c = true) : (r.dropFar view centre).1.slots[c]? = r.slots[c]? := by
+  have hfar := ViewRange.not_isFar_of_contains h 1
+  simp only [Renderer.dropFar]
+  rw [slots_forEach_drop]
+  split
+  · next hm => simp [List.mem_filter, hfar] at hm
+  · rfl
 
 /--
 **Loading another world leaves nothing behind.** After a reset no chunk holds a

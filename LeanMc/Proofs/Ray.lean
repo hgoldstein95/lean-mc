@@ -10,10 +10,12 @@ import LeanMc.Proofs.Mesh
 * **Nothing solid comes first.** The target is reached from the eye's cell by a
   chain of face-adjacent cells, every one of which before the target is empty.
 * **The target is within reach**: inside the box of cells spanned by the two
-  ends of the segment that was walked.
+  ends of the segment that was walked, and so is the cell in front of its face.
+* **Only a walk that starts inside a block has no face to report.**
 
 These are properties of the walk the targeting code takes. That the walk
-follows the geometric segment exactly is checked by tests, not proved here.
+follows the geometric segment, every cell it visits being one the segment
+touches, is shown in `LeanMc.Proofs.RayGeometry`.
 -/
 
 namespace LeanMc.Ray
@@ -221,5 +223,63 @@ theorem cast_walk {hit : RayHit} (h : cast solid o d = some hit) :
 /-- **The target is within reach**: inside the box of cells spanned by the segment's ends. -/
 theorem cast_within {hit : RayHit} (h : cast solid o d = some hit) : Within o d hit.block :=
   castFrom_within (within_blockPos o d) h
+
+/-! ## The targeted face -/
+
+/-- Once the walk has taken a step, whatever it hits has a face. -/
+theorem castFrom_face_some {fuel : Nat} {c : BlockPos} {dir : Dir} {hit : RayHit}
+    (h : castFrom solid o d fuel c (some dir) = some hit) : hit.face ≠ none := by
+  induction fuel generalizing c dir with
+  | zero => cases h
+  | succ fuel ih =>
+    unfold castFrom at h
+    split at h
+    · cases h
+      simp
+    · split at h
+      · cases h
+      · exact ih h
+
+/-- **Only a walk that starts inside a block has no face to report.** -/
+theorem cast_face_none {hit : RayHit} (h : cast solid o d = some hit) (hf : hit.face = none) :
+    solid o.blockPos = true := by
+  unfold cast castFrom at h
+  split at h
+  · next hs => exact hs
+  · split at h
+    · cases h
+    · exact absurd hf (castFrom_face_some h)
+
+theorem castFrom_face_within {fuel : Nat} {c : BlockPos} {entered : Option Dir} {hit : RayHit}
+    (hw : Within o d c) (hent : ∀ dir, entered = some dir → Within o d (c.step dir.opp))
+    (h : castFrom solid o d fuel c entered = some hit) {f : Dir} (hf : hit.face = some f) :
+    Within o d (hit.block.step f) := by
+  induction fuel generalizing c entered with
+  | zero => cases h
+  | succ fuel ih =>
+    unfold castFrom at h
+    split at h
+    · cases h
+      cases entered with
+      | none => cases hf
+      | some dir =>
+        cases hf
+        exact hent dir rfl
+    · split at h
+      · cases h
+      · next dir hn =>
+        refine ih (within_step hw (nextStep_crosses hn)) ?_ h
+        intro dir' hd
+        cases hd
+        rw [BlockPos.step_step_opp]
+        exact hw
+
+/--
+**The cell in front of the targeted face is within reach too**: it is the cell
+the walk was in just before the target, so it lies in the same box of cells.
+-/
+theorem cast_face_within {hit : RayHit} (h : cast solid o d = some hit) {f : Dir}
+    (hf : hit.face = some f) : Within o d (hit.block.step f) :=
+  castFrom_face_within (within_blockPos o d) (fun _ hd => by cases hd) h hf
 
 end LeanMc.Ray

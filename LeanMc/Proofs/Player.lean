@@ -10,6 +10,11 @@ import LeanMc.Core.Player
 * **No tunnelling.** A tick moves the player through a chain of short,
   axis-aligned substeps, and the player's box is clear of solid blocks at every
   point along every substep, not only at its ends.
+* **A move goes the whole way or stops flush.** A move that is not reported as
+  blocked ends exactly where it was meant to; one that is leaves the player
+  touching what stopped it, with no gap. So "blocked" always means an obstacle.
+* **Speed is bounded.** No axis of the velocity ever exceeds `maxSpeed`, so the
+  rounds `moveAxis` is given always suffice.
 * **The floor holds.** Over a solid floor at height zero, the player's feet
   never go below the top of that floor.
 * **Physics is the same everywhere.** Shifting the world and the player by any
@@ -273,6 +278,219 @@ theorem step_rest {solid : BlockPos → Bool} {p : Player} (hfree : Free solid p
     simp [moveAxis, moveFuel]
   simp [step, hintent, hy, hx]
 
+/-! ## A move goes the whole way or stops flush -/
+
+theorem moveAxis_zero (solid : BlockPos → Bool) (axis : Axis) (fuel : Nat) (pos : Vec3) :
+    moveAxis solid axis fuel pos 0 = (pos, false) := by
+  cases fuel <;> simp [moveAxis]
+
+/--
+Closing the gap to the next block boundary never enters a block: a free player
+moved by `contactStep` is still free. So when `moveAxis` finds the way blocked,
+it always takes this last short step, and its other branch is never reached.
+-/
+theorem contact_free {solid : BlockPos → Bool} {pos : Vec3} (axis : Axis) (s : Int)
+    (hfree : Free solid pos) : Free solid (pos.add axis (contactStep pos axis s)) := by
+  intro q hq
+  apply hfree q
+  by_cases hs : 0 < s <;> cases axis <;>
+    simp only [contactStep, hs, ↓reduceIte, Box.Overlaps, box, Vec3.add, Vec3.get, halfWidth,
+      height] at hq ⊢ <;>
+    omega
+
+/-- The clamped substep has the sign of the move, is at most `maxStep`, and is the whole move if that is shorter. -/
+theorem clamp_step {d : Int} :
+    (0 < d → 0 < clamp (-maxStep) maxStep d ∧ clamp (-maxStep) maxStep d ≤ 32768
+        ∧ clamp (-maxStep) maxStep d ≤ d
+        ∧ (clamp (-maxStep) maxStep d = d ∨ clamp (-maxStep) maxStep d = 32768))
+      ∧ (¬ 0 < d → d ≠ 0 → clamp (-maxStep) maxStep d < 0 ∧ -32768 ≤ clamp (-maxStep) maxStep d
+        ∧ d ≤ clamp (-maxStep) maxStep d
+        ∧ (clamp (-maxStep) maxStep d = d ∨ clamp (-maxStep) maxStep d = -32768)) := by
+  simp only [clamp, maxStep]
+  omega
+
+/--
+**A move that is not blocked goes the whole way.** With rounds enough for the
+distance, a move that reports no collision ends exactly `d` along the axis.
+-/
+theorem moveAxis_of_not_blocked {solid : BlockPos → Bool} {axis : Axis} (fuel : Nat) {pos : Vec3}
+    {d : Int} (hfuel : d.natAbs ≤ 32768 * fuel)
+    (h : (moveAxis solid axis fuel pos d).2 = false) :
+    (moveAxis solid axis fuel pos d).1 = pos.add axis d := by
+  induction fuel generalizing pos d with
+  | zero =>
+    have hd : d = 0 := by omega
+    subst hd
+    simp [moveAxis, add_zero]
+  | succ fuel ih =>
+    by_cases hd : d = 0
+    · subst hd
+      simp [moveAxis, add_zero]
+    · have hs := @clamp_step d
+      simp only [moveAxis, hd, ↓reduceIte] at h ⊢
+      generalize clamp (-maxStep) maxStep d = s at hs h ⊢
+      by_cases hb : blocked solid (pos.add axis s) = true
+      · simp only [hb, ↓reduceIte] at h
+        split at h <;> cases h
+      · have hb' : blocked solid (pos.add axis s) = false := by simpa using hb
+        simp only [hb', Bool.false_eq_true, ↓reduceIte] at h ⊢
+        rw [ih (by by_cases hpos : 0 < d
+                   · have := hs.1 hpos; omega
+                   · have := hs.2 hpos hd; omega) h, add_add]
+        congr 1
+        omega
+
+/--
+**A blocked move stops flush.** When `moveAxis` reports a collision, the player
+is left touching the obstacle: one more unit the same way would be inside it.
+-/
+theorem moveAxis_flush {solid : BlockPos → Bool} {axis : Axis} (fuel : Nat) {pos : Vec3} {d : Int}
+    (hfree : Free solid pos) (hfuel : d.natAbs ≤ 32768 * fuel)
+    (h : (moveAxis solid axis fuel pos d).2 = true) :
+    blocked solid ((moveAxis solid axis fuel pos d).1.add axis (if 0 < d then 1 else -1)) = true := by
+  induction fuel generalizing pos d with
+  | zero =>
+    have hd : d = 0 := by omega
+    subst hd
+    simp [moveAxis] at h
+  | succ fuel ih =>
+    by_cases hd : d = 0
+    · subst hd
+      simp [moveAxis] at h
+    · have hs := @clamp_step d
+      simp only [moveAxis, hd, ↓reduceIte] at h ⊢
+      generalize clamp (-maxStep) maxStep d = s at hs h ⊢
+      by_cases hb : blocked solid (pos.add axis s) = true
+      · have hnear : blocked solid (pos.add axis (contactStep pos axis s)) = false :=
+          blocked_eq_false_iff.mpr (contact_free axis s hfree)
+        simp only [hb, ↓reduceIte, hnear, Bool.false_eq_true] at h ⊢
+        obtain ⟨q, hq, hsolid⟩ := Box.collides_eq_true_iff.mp hb
+        have hnot : ¬ (box pos).Overlaps q := fun ho => by
+          rw [hfree q ho] at hsolid
+          cases hsolid
+        refine Box.collides_eq_true_iff.mpr ⟨q, ?_, hsolid⟩
+        by_cases hpos : 0 < d
+        · obtain ⟨h1, h2, -, -⟩ := hs.1 hpos
+          cases axis <;>
+            simp only [contactStep, h1, hpos, ↓reduceIte, Box.Overlaps, box, Vec3.add, Vec3.get,
+              halfWidth, height] at hq hnot ⊢ <;>
+            omega
+        · obtain ⟨h1, h2, -, -⟩ := hs.2 hpos hd
+          have h1' : ¬ 0 < s := by omega
+          cases axis <;>
+            simp only [contactStep, h1', hpos, ↓reduceIte, Box.Overlaps, box, Vec3.add, Vec3.get,
+              halfWidth, height] at hq hnot ⊢ <;>
+            omega
+      · have hb' : blocked solid (pos.add axis s) = false := by simpa using hb
+        simp only [hb', Bool.false_eq_true, ↓reduceIte] at h ⊢
+        by_cases hrest : d - s = 0
+        · rw [hrest, moveAxis_zero] at h
+          cases h
+        · have hsign : (if 0 < d - s then (1 : Int) else -1) = (if 0 < d then 1 else -1) := by
+            by_cases hpos : 0 < d
+            · have := hs.1 hpos
+              have hc : 0 < d - s := by omega
+              simp only [hpos, hc, ↓reduceIte]
+            · have := hs.2 hpos hd
+              have hc : ¬ 0 < d - s := by omega
+              simp only [hpos, hc, ↓reduceIte]
+          have := ih (blocked_eq_false_iff.mp hb')
+            (by by_cases hpos : 0 < d
+                · have := hs.1 hpos; omega
+                · have := hs.2 hpos hd; omega) h
+          rw [hsign] at this
+          exact this
+
+/-! ## Speed -/
+
+/-- The velocity is within `maxSpeed` along every axis. -/
+def SpeedBounded (p : Player) : Prop :=
+  (-maxSpeed ≤ p.vel.x ∧ p.vel.x ≤ maxSpeed) ∧ (-maxSpeed ≤ p.vel.y ∧ p.vel.y ≤ maxSpeed)
+    ∧ (-maxSpeed ≤ p.vel.z ∧ p.vel.z ≤ maxSpeed)
+
+instance (p : Player) : Decidable p.SpeedBounded := by
+  unfold SpeedBounded
+  infer_instance
+
+/-- Moving a velocity towards a target never takes it outside a range that holds both. -/
+theorem approach_bounds {v target rate m : Int} (hr : 0 ≤ rate ∧ rate ≤ 16)
+    (hv : -m ≤ v ∧ v ≤ m) (ht : -m ≤ target ∧ target ≤ m) :
+    -m ≤ approach v target rate ∧ approach v target rate ≤ m := by
+  unfold approach
+  simp only []
+  split
+  · exact ht
+  · have h1 : 0 ≤ target - v →
+        0 ≤ (target - v) * rate / 16 ∧ (target - v) * rate / 16 ≤ target - v := by
+      intro hg
+      have : 0 ≤ (target - v) * rate := Int.mul_nonneg hg hr.1
+      have : (target - v) * rate ≤ (target - v) * 16 := Int.mul_le_mul_of_nonneg_left hr.2 hg
+      omega
+    have h2 : target - v ≤ 0 →
+        target - v ≤ (target - v) * rate / 16 ∧ (target - v) * rate / 16 ≤ 0 := by
+      intro hg
+      have : (target - v) * rate ≤ 0 := Int.mul_nonpos_of_nonpos_of_nonneg hg hr.1
+      have : (target - v) * 16 ≤ (target - v) * rate := Int.mul_le_mul_of_nonpos_left hg hr.2
+      omega
+    omega
+
+/-- What the player attempts in a tick is within `maxSpeed` along every axis. -/
+theorem intent_bounds (input : Input) {p : Player} (h : p.SpeedBounded) :
+    (-maxSpeed ≤ (intent input p).x ∧ (intent input p).x ≤ maxSpeed)
+      ∧ (-maxSpeed ≤ (intent input p).y ∧ (intent input p).y ≤ maxSpeed)
+      ∧ (-maxSpeed ≤ (intent input p).z ∧ (intent input p).z ≤ maxSpeed) := by
+  obtain ⟨hx, hy, hz⟩ := h
+  have hr : ∀ b : Bool, (0 : Int) ≤ (if b then 8 else 2) ∧ (if b then 8 else 2 : Int) ≤ 16 := by
+    intro b; cases b <;> decide
+  have cx := clamp_bounds (lo := -maxSpeed) (hi := maxSpeed) (by decide) input.wishX
+  have cz := clamp_bounds (lo := -maxSpeed) (hi := maxSpeed) (by decide) input.wishZ
+  refine ⟨approach_bounds (hr _) hx cx, ?_, approach_bounds (hr _) hz cz⟩
+  simp only [intent, maxSpeed, flySpeed, jumpSpeed, gravity] at hy ⊢
+  repeat' split
+  all_goals omega
+
+/-- **Speed is bounded.** A tick never leaves the player faster than `maxSpeed` along any axis. -/
+theorem step_speedBounded (solid : BlockPos → Bool) (input : Input) {p : Player}
+    (h : p.SpeedBounded) : (step solid input p).SpeedBounded := by
+  obtain ⟨hx, hy, hz⟩ := intent_bounds input h
+  simp only [SpeedBounded, step, maxSpeed] at hx hy hz ⊢
+  refine ⟨?_, ?_, ?_⟩ <;> split <;> omega
+
+/-- The rounds `moveAxis` is given cover any distance up to `maxSpeed`. -/
+theorem moveFuel_enough {d : Int} (hd : -maxSpeed ≤ d ∧ d ≤ maxSpeed) :
+    d.natAbs ≤ 32768 * moveFuel := by
+  simp only [maxSpeed, moveFuel] at hd ⊢
+  omega
+
+/--
+**Blocked means an obstacle.** In the game, where no axis is ever asked to move
+further than `maxSpeed`, a move reported as blocked has stopped flush against
+something solid; it has not merely run out of rounds.
+-/
+theorem moveAxis_flush_of_speed {solid : BlockPos → Bool} {axis : Axis} {pos : Vec3} {d : Int}
+    (hfree : Free solid pos) (hd : -maxSpeed ≤ d ∧ d ≤ maxSpeed)
+    (h : (moveAxis solid axis moveFuel pos d).2 = true) :
+    blocked solid ((moveAxis solid axis moveFuel pos d).1.add axis (if 0 < d then 1 else -1))
+      = true :=
+  moveAxis_flush moveFuel hfree (moveFuel_enough hd) h
+
+/-- And one not reported as blocked has gone the whole way. -/
+theorem moveAxis_of_not_blocked_of_speed {solid : BlockPos → Bool} {axis : Axis} {pos : Vec3}
+    {d : Int} (hd : -maxSpeed ≤ d ∧ d ≤ maxSpeed)
+    (h : (moveAxis solid axis moveFuel pos d).2 = false) :
+    (moveAxis solid axis moveFuel pos d).1 = pos.add axis d :=
+  moveAxis_of_not_blocked moveFuel (moveFuel_enough hd) h
+
+/--
+**No jumping in mid-air.** A player who is not flying and has nothing beneath
+them can only fall: the vertical speed they attempt is the old one less
+gravity, down to the fastest fall.
+-/
+theorem intent_airborne (input : Input) {p : Player} (hair : p.onGround = false)
+    (hfly : (p.flying != input.toggleFly) = false) :
+    (intent input p).y = max (-maxSpeed) (p.vel.y - gravity) := by
+  simp [intent, hair, hfly]
+
 /-! ## The floor -/
 
 theorem SafeStep.above_floor {solid : BlockPos → Bool} {a b : Vec3}
@@ -339,6 +557,50 @@ theorem settle_above_floor {solid : BlockPos → Bool} (hfloor : ∀ x z, solid 
       have := hfree _ hov
       rw [hfloor] at this
       cases this
+
+/-- A free player at a whole-block height with something a block below is standing on it. -/
+theorem blocked_below_of_block_below {solid : BlockPos → Bool} {pos : Vec3} (hfree : Free solid pos)
+    (hm : pos.y % 65536 = 0) (h : blocked solid (pos.add .y (-65536)) = true) :
+    blocked solid (pos.add .y (-1)) = true := by
+  obtain ⟨q, hq, hsolid⟩ := Box.collides_eq_true_iff.mp h
+  have hnot : ¬ (box pos).Overlaps q := fun ho => by
+    rw [hfree q ho] at hsolid
+    cases hsolid
+  refine Box.collides_eq_true_iff.mpr ⟨q, ?_, hsolid⟩
+  simp only [Box.Overlaps, box, Vec3.add, halfWidth, height] at hq hnot ⊢
+  omega
+
+/--
+Settling from a whole-block height ends on the ground, if there is ground to
+be found within the drop: the player comes to rest with something solid
+directly beneath.
+-/
+theorem settle_grounded {solid : BlockPos → Bool} (drop : Nat) {pos : Vec3} (hfree : Free solid pos)
+    (hm : pos.y % 65536 = 0)
+    (hbelow : ∃ k : Nat, k ≤ drop ∧ blocked solid (pos.add .y (-(65536 * (k + 1)))) = true) :
+    blocked solid ((settle solid drop pos).add .y (-1)) = true := by
+  induction drop generalizing pos with
+  | zero =>
+    obtain ⟨k, hk, hb⟩ := hbelow
+    have : k = 0 := by omega
+    subst this
+    exact blocked_below_of_block_below hfree hm hb
+  | succ drop ih =>
+    simp only [settle]
+    split
+    · next hb => exact blocked_below_of_block_below hfree hm hb
+    · next hb =>
+      obtain ⟨k, hk, hbk⟩ := hbelow
+      cases k with
+      | zero => exact absurd hbk hb
+      | succ k =>
+        refine ih (blocked_eq_false_iff.mp (by simpa using hb))
+          (by simp only [Vec3.add]; omega) ⟨k, by omega, ?_⟩
+        rw [add_add]
+        have : (-65536 : Int) + -(65536 * ((k : Int) + 1)) = -(65536 * (((k + 1 : Nat) : Int) + 1)) := by
+          omega
+        rw [this]
+        exact hbk
 
 /-! ## Translation invariance -/
 

@@ -47,8 +47,6 @@ structure Game where
   /-- Number of ticks simulated so far. -/
   ticks : Nat := 0
   frame : Nat := 0
-  /-- The seed of the generated world, which a saved game records; none for the flat test world. -/
-  seed : Option UInt64 := none
   /-- A message to show for a while, and the frame at which to stop showing it. -/
   notice : String := ""
   noticeUntil : Nat := 0
@@ -142,12 +140,15 @@ def say (g : Game) (notice : String) : Game :=
 /-- Where the game is saved. -/
 def savePath : System.FilePath := "lean-mc.save"
 
-/-- Write the game to a file. -/
+/--
+Write the game to a file. The session supplies its own seed, so the shell
+cannot save the wrong one; a world not generated from a seed cannot be saved.
+-/
 def save (g : Game) (path : System.FilePath := savePath) : IO Game := do
-  match g.seed with
+  match g.session.snapshot with
   | none => return g.say "this world cannot be saved"
-  | some seed =>
-    IO.FS.writeFile path (g.session.snapshot seed).toText
+  | some data =>
+    IO.FS.writeFile path data.toText
     return g.say s!"saved to {path}"
 
 /--
@@ -164,8 +165,7 @@ def load (g : Game) (path : System.FilePath := savePath) : IO Game := do
     | none => return g.say s!"{path} does not describe a sound game"
     | some session =>
       let g ← g.plan g.renderer.reset
-      return { g with session, seed := some data.seed, prevPos := session.state.player.pos }.say
-        s!"loaded {path}"
+      return { g with session, prevPos := session.state.player.pos }.say s!"loaded {path}"
 
 /-- Drop meshes and cached chunks that are well out of view. -/
 def unloadFar (g : Game) : IO Game :=
@@ -177,19 +177,16 @@ each is told and what changes, and the planner decides what to rebuild.
 -/
 def advance (g : Game) (frame : Frame) : IO Game := do
   let ran := g.session.ticksDue frame
-  let before := g.world
   let (session, log) := g.session.frameLog frame
-  let mut g := { g with
+  -- The planner follows the frame's block changes from the world the frame began in;
+  -- `Renderer.Synced.frame` shows that this leaves it in step with the world it ended in.
+  let followed := g.renderer.applyEdits g.world log.edits.toList
+  let g := { g with
     session
     prevPos := log.before.getD g.prevPos
     ticks := g.ticks + ran
     edits := g.edits + log.edits.size }
-  -- Replay the block changes one at a time so the planner sees each world in turn.
-  let mut world := before
-  for (p, b) in log.edits do
-    world := world.set p b
-    g ← g.plan (g.renderer.applyEdit world p b)
-  return g
+  g.plan followed
 
 /-- Turn the mouse into a view direction and handle capturing it. -/
 def look (g : Game) : IO Game := do
@@ -521,8 +518,7 @@ def saveTest (g : Game) (path : String) : IO UInt32 := do
   ok := (← report "a truncated file is refused and nothing changes" <|
     after.player == g.player && after.world.edits.size == g.world.edits.size
       && after.notice.endsWith "is not a saved game") && ok
-  if let some seed := saved.seed then
-    let data := saved.session.snapshot seed
+  if let some data := saved.session.snapshot then
     -- Appended, because a later edit to a cell wins.
     let buried := { data with edits := data.edits ++ [(data.player.pos.blockPos, Block.stone)] }
     IO.FS.writeFile path buried.toText
@@ -562,13 +558,18 @@ def run (args : List String) : IO UInt32 := do
   let started : Option Session :=
     if opts.flat then
       let pos := standNear Terrain.flatWorld (opts.start.getD ⟨7, 12, 14⟩)
-      Session.start? Terrain.flatWorld Terrain.flatWorld_floor { pos }
+      Session.start? Terrain.flatWorld Terrain.flatWorld_floor
+        (Player.resting Terrain.flatWorld.solid pos)
     else
       match opts.start with
       | none => some (Terrain.session opts.seed)
       | some b =>
         let world := Terrain.world opts.seed
-        Session.start? world (Terrain.world_floor_get opts.seed) { pos := standNear world b }
+        Session.start? world (Terrain.world_floor_get opts.seed)
+          (Player.resting world.solid (standNear world b)) (seed := some opts.seed)
+          (seeded := fun sd h => by
+            cases h
+            rfl)
   let some session := started
     | IO.eprintln "there is nowhere to stand at that position"
       return 1
@@ -576,8 +577,7 @@ def run (args : List String) : IO UInt32 := do
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
   let mut game : Game :=
-    { session, prevPos := pos, pitch := -0.35, yaw := 0.15
-      seed := if opts.flat then none else some opts.seed }
+    { session, prevPos := pos, pitch := -0.35, yaw := 0.15 }
   if let some path := opts.load then
     game ← game.load path
     IO.println game.notice

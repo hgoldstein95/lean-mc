@@ -30,6 +30,6 @@ def spawn (seed : UInt64) : Vec3 :=
 /-- The state a new game starts in. -/
 def initial (seed : UInt64) : State where
   world := world seed
-  player := { pos := spawn seed }
+  player := Player.resting (world seed).solid (spawn seed)
 
 end LeanMc.Terrain

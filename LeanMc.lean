@@ -25,6 +25,7 @@ import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
 import LeanMc.Proofs.Player
 import LeanMc.Proofs.Ray
+import LeanMc.Proofs.RayGeometry
 import LeanMc.Proofs.Inventory
 import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session

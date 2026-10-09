@@ -157,6 +157,17 @@ def applyEdit (r : Renderer) (w : World) (p : BlockPos) (b : Block) : Renderer �
   forEach (·.remesh w) { r with cache := r.cache.setBlock p b }
     ((dirtyChunks p).filter r.slots.contains)
 
+/--
+Follow a run of block changes, oldest first, that started in world `w`: each
+change is followed in the world as it stood just after it.
+-/
+def applyEdits (r : Renderer) (w : World) : List (BlockPos × Block) → Renderer × List GpuCmd
+  | [] => (r, [])
+  | e :: es =>
+    let first := r.applyEdit (w.set e.1 e.2) e.1 e.2
+    let rest := first.1.applyEdits (w.set e.1 e.2) es
+    (rest.1, first.2 ++ rest.2)
+
 /-- Drop the meshes of chunks far from `centre`, and the cached chunks further out still. -/
 def dropFar (r : Renderer) (view : ViewRange) (centre : ChunkPos) : Renderer × List GpuCmd :=
   let dropped := forEach drop r ((r.slots.toList.map (·.1)).filter (view.isFar centre · 1))

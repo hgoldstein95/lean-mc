@@ -12,22 +12,44 @@ player through the resulting world.
 
 Blocks are conserved: digging puts the block in the inventory, and placing
 takes one out of the selected slot. Nothing is created or destroyed.
+
+A tick changes at most one block, so a command asks for at most one change: it
+carries an `Action`, not a flag for each. A command that asks to dig and place
+at once cannot be written down, so neither request can hide the other.
 -/
 
 namespace LeanMc
+
+/-- What a tick can do to the world. -/
+inductive Action where
+  /-- Remove the block being looked at and pick it up. -/
+  | dig
+  /-- Put a block from the selected slot against the face being looked at. -/
+  | place
+  deriving DecidableEq, Repr
 
 /-- Everything the player asks for in one tick. -/
 structure Command where
   move : Input := {}
   /-- From the eyes towards what the player is looking at, in units. -/
   look : Vec3 := ⟨0, 0, 0⟩
-  /-- Remove the block being looked at and pick it up. -/
-  dig : Bool := false
-  /-- Put a block from the selected slot against the face being looked at. -/
-  place : Bool := false
+  /-- Dig or place, if either. -/
+  action : Option Action := none
   /-- Make this the selected slot. -/
   select : Option (Fin 9) := none
   deriving Repr
+
+namespace Command
+
+/-- Whether the command asks to dig. -/
+def dig (c : Command) : Bool :=
+  c.action == some .dig
+
+/-- Whether the command asks to place. -/
+def place (c : Command) : Bool :=
+  c.action == some .place
+
+end Command
 
 structure State where
   world : World
@@ -53,10 +75,21 @@ def reach : Int := 327680
 def eye (s : State) : Vec3 :=
   s.player.pos.add .y Player.eyeHeight
 
-/-- A look vector cut down to the player's reach. -/
+/-- One component of a look vector whose longest component is `longest`, scaled so that the longest is `reach`. -/
+def scaleToReach (c : Int) (longest : Nat) : Int :=
+  let size : Int := ((c.natAbs * 327680 / longest : Nat) : Int)
+  if c < 0 then -size else size
+
+/--
+A look vector cut down to the player's reach. One that is already within reach
+along every axis is left alone; a longer one is scaled down, keeping its
+direction, until its longest component is exactly the reach. Cutting each axis
+down separately would instead turn the vector, towards a diagonal.
+-/
 def reachVector (look : Vec3) : Vec3 :=
-  ⟨Player.clamp (-reach) reach look.x, Player.clamp (-reach) reach look.y,
-   Player.clamp (-reach) reach look.z⟩
+  let longest := max look.x.natAbs (max look.y.natAbs look.z.natAbs)
+  if longest ≤ 327680 then look
+  else ⟨scaleToReach look.x longest, scaleToReach look.y longest, scaleToReach look.z longest⟩
 
 /-- The block the player is looking at, if one is within reach. -/
 def target (s : State) (look : Vec3) : Option RayHit :=
@@ -78,19 +111,20 @@ def change (s : State) (cmd : Command) : Option Change :=
   match s.target cmd.look with
   | none => none
   | some hit =>
-    if cmd.dig then
+    match cmd.action with
+    | none => none
+    | some .dig =>
       if s.world.get hit.block = .bedrock then none
       else
         match s.inventory.add (s.world.get hit.block) with
         | some inventory => some ⟨hit.block, .air, inventory⟩
         | none => none
-    else if cmd.place then
+    | some .place =>
       match hit.face, s.inventory.take (s.slot cmd) with
       | some f, some (b, inventory) =>
         if (Player.box s.player.pos).Overlaps (hit.block.step f) then none
         else some ⟨hit.block.step f, b, inventory⟩
       | _, _ => none
-    else none
 
 /-- The block change a command asks for this tick, if any: which cell, and what it becomes. -/
 def edit (s : State) (cmd : Command) : Option (BlockPos × Block) :=

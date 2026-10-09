@@ -16,6 +16,12 @@ import LeanMc.Proofs.World
   result as meshing from the world.
 * **Buffer layout.** The packed buffer is exactly the listed faces, six
   vertices of eight bytes each, and every field fits its byte without wrapping.
+  A chunk's mesh is never more than 147456 vertices, well within the counts the
+  shim keeps in 32 bits.
+* **Face geometry.** The table of face corners is real geometry: every corner
+  of a face lies on that face of the block, both triangles are wound
+  counter-clockwise seen from outside, so they face outwards and are not
+  culled, and the texture on a side face is the right way up.
 -/
 
 namespace LeanMc
@@ -235,6 +241,97 @@ theorem meshChunk_vertices (blockAt : BlockPos → Block) (c : ChunkPos) :
 theorem length_blockFaces_le (blockAt : BlockPos → Block) (c : ChunkPos) (l : LocalPos) :
     (blockFaces blockAt c l).length ≤ 6 :=
   List.length_filterMap_le _ _
+
+theorem length_flatMap_le {α β : Type} (f : α → List β) (k : Nat) (h : ∀ a, (f a).length ≤ k)
+    (l : List α) : (l.flatMap f).length ≤ k * l.length := by
+  induction l with
+  | nil => simp
+  | cons a l ih =>
+    have := h a
+    rw [List.flatMap_cons, List.length_append, List.length_cons, Nat.mul_succ]
+    omega
+
+/-- A chunk has at most six faces for each of its 4096 blocks. -/
+theorem length_chunkFaces_le (blockAt : BlockPos → Block) (c : ChunkPos) :
+    (chunkFaces blockAt c).length ≤ 24576 := by
+  have h := length_flatMap_le (blockFaces blockAt c) 6 (length_blockFaces_le blockAt c) LocalPos.all
+  have hall : LocalPos.all.length = 4096 := by simp [LocalPos.all]
+  rw [hall] at h
+  exact h
+
+/--
+A chunk's mesh is at most 1179648 bytes, which is 147456 vertices: the vertex
+and byte counts the shim computes from it fit in 32 bits with room to spare.
+-/
+theorem size_meshChunk_le (blockAt : BlockPos → Block) (c : ChunkPos) :
+    (meshChunk blockAt c).size ≤ 1179648 := by
+  have := length_chunkFaces_le blockAt c
+  rw [size_meshChunk]
+  omega
+
+/-! ## Face geometry -/
+
+namespace Dir
+
+/-- The outward direction of each face, as a vector. -/
+def normal : Dir → Int × Int × Int
+  | xp => (1, 0, 0) | xn => (-1, 0, 0) | yp => (0, 1, 0) | yn => (0, -1, 0)
+  | zp => (0, 0, 1) | zn => (0, 0, -1)
+
+/-- A face corner as an integer vector. -/
+def cornerVec (d : Dir) (i : Fin 4) : Int × Int × Int :=
+  ((d.corner i).1, (d.corner i).2.1, (d.corner i).2.2)
+
+/-- The cross product of the two edges of a triangle leaving its first corner. -/
+def triangleNormal (a b c : Int × Int × Int) : Int × Int × Int :=
+  let u : Int × Int × Int := (b.1 - a.1, b.2.1 - a.2.1, b.2.2 - a.2.2)
+  let v : Int × Int × Int := (c.1 - a.1, c.2.1 - a.2.1, c.2.2 - a.2.2)
+  (u.2.1 * v.2.2 - u.2.2 * v.2.1, u.2.2 * v.1 - u.1 * v.2.2, u.1 * v.2.1 - u.2.1 * v.1)
+
+/--
+**Every corner of a face lies on that face of the block**: on the plane one
+unit along the face's direction for the positive faces, and on the plane
+through the block's minimum corner for the negative ones.
+-/
+theorem corner_on_face (d : Dir) (i : Fin 4) :
+    match d with
+    | xp => (d.corner i).1 = 1 | xn => (d.corner i).1 = 0
+    | yp => (d.corner i).2.1 = 1 | yn => (d.corner i).2.1 = 0
+    | zp => (d.corner i).2.2 = 1 | zn => (d.corner i).2.2 = 0 := by
+  cases d <;> revert i <;> decide
+
+/-- The four corners of a face are four different points. -/
+theorem corner_injective (d : Dir) (i j : Fin 4) (h : d.corner i = d.corner j) : i = j := by
+  cases d <;> revert i j <;> decide
+
+/--
+**Faces are wound outwards.** Both triangles of every face, corners `0 1 2`
+and `0 2 3`, turn counter-clockwise seen from outside the block: the cross
+product of their edges is exactly the face's outward direction. So neither is
+culled as a back face, and the direction sent to the shim is the true normal.
+-/
+theorem winding (d : Dir) :
+    triangleNormal (d.cornerVec 0) (d.cornerVec 1) (d.cornerVec 2) = d.normal
+      ∧ triangleNormal (d.cornerVec 0) (d.cornerVec 2) (d.cornerVec 3) = d.normal := by
+  cases d <;> decide
+
+/-- The corners the two triangles use are the ones `winding` is about. -/
+theorem triangleCorners_eq : Face.triangleCorners = [0, 1, 2, 0, 2, 3] := rfl
+
+/--
+**Side faces are textured the right way up**: the texture's `v` runs down as
+the corner's `y` runs up, so the top of the tile is at the top of the block.
+-/
+theorem uv_upright (d : Dir) (i : Fin 4) (h : d ≠ yp ∧ d ≠ yn) :
+    (cornerUV i).2 + (d.corner i).2.1 = 1 := by
+  cases d <;> revert i <;> simp at h ⊢ <;> decide
+
+/-- Each corner of a face gets a different corner of the tile. -/
+theorem cornerUV_injective (i j : Fin 4) (h : cornerUV i = cornerUV j) : i = j := by
+  revert i j
+  decide
+
+end Dir
 
 /-! ## Byte ranges -/
 
