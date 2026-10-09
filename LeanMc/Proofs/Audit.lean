@@ -4,7 +4,9 @@ import LeanMc.Proofs.Chunk
 import LeanMc.Proofs.World
 import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
+import LeanMc.Proofs.Body
 import LeanMc.Proofs.Player
+import LeanMc.Proofs.Entity
 import LeanMc.Proofs.Ray
 import LeanMc.Proofs.RayGeometry
 import LeanMc.Proofs.Inventory
@@ -139,30 +141,64 @@ open LeanMc
   Terrain.world_setMany_get
   Terrain.mem_chunkFaces_cache
 
--- Player physics
+-- Body physics, for any shape
 #assert_standard_axioms
   Box.collides_eq_false_iff
-  Player.free_between
-  Player.SafeStep.free_between
+  Shape.free_between
+  Shape.SafeStep.free_between
+  Shape.move_reach
+  Shape.move_free
+  Shape.move_above_floor
+  Shape.move_speedBounded
+  Shape.move_shift
+  Shape.contact_free
+  Shape.moveAxis_flush
+  Shape.moveAxis_of_not_blocked
+  Shape.moveAxis_flush_of_speed
+  Shape.settle_free
+  Shape.settle_grounded
+
+-- Player physics
+#assert_standard_axioms
   Player.step_reach
   Player.step_free
   Player.step_onGround
   Player.step_above_floor
   Player.step_shift
-  Player.contact_free
-  Player.moveAxis_flush
-  Player.moveAxis_of_not_blocked
-  Player.moveAxis_flush_of_speed
   Player.step_speedBounded
   Player.intent_airborne
-  Player.settle_free
-  Player.settle_grounded
   Terrain.spawn_grounded
   Terrain.initial_onGround
   World.step_translate
   Terrain.generate_above_column
   Terrain.spawn_free
   Terrain.step_above_bedrock
+
+-- Creatures
+#assert_standard_axioms
+  Entity.think_toBody
+  Entity.step_sound
+  Entity.stepAll_sound
+  Entity.stepAll_length
+  Entity.stepAll_asleep
+  Terrain.creatures_sound
+  Terrain.creatures_column
+  Terrain.creatures_length
+  Terrain.creatures_filter
+
+-- Loading: what is live, and what is made when
+#assert_standard_axioms
+  State.step_asleep
+  State.step_entities_length
+  State.edit_clear_of_unloaded
+  State.populate_entities
+  State.populate_populated
+  State.populate_of_populated
+  State.Populated.step
+  State.Populated.run
+  State.step_populated_mono
+  Terrain.initial_populated
+  Terrain.play_populated
 
 -- Targeting
 #assert_standard_axioms
@@ -204,6 +240,9 @@ open LeanMc
   State.step_conserves
   State.step_noAir
   State.step_free
+  State.free_after_edit
+  State.step_entities_sound
+  State.not_occupied_iff
   State.Sound.step
   State.Sound.run
   Terrain.initial_sound
@@ -251,7 +290,7 @@ open LeanMc
 
 -- Progress: things that should happen do
 #assert_standard_axioms
-  Player.moveAxis_of_free
+  Shape.moveAxis_of_free
   Player.step_rest
   State.edit_dig
   State.edit_place

@@ -2,6 +2,7 @@ import LeanMc.Core.Game
 import LeanMc.Proofs.Ray
 import LeanMc.Proofs.RayGeometry
 import LeanMc.Proofs.Player
+import LeanMc.Proofs.Entity
 import LeanMc.Proofs.Inventory
 
 /-!
@@ -22,15 +23,18 @@ import LeanMc.Proofs.Inventory
   inventory and placing moves one back. For every kind of block, the number
   carried plus the number in any region containing the edited cell is the same
   after a tick as before. Nothing is duplicated and nothing vanishes.
-* **The player is never buried.** Neither digging nor placing nor moving puts
-  the player inside a solid block.
+* **Nobody is ever buried.** Neither digging nor placing nor moving puts the
+  player or a creature inside a solid block.
 * **Soundness is an invariant.** Together: starting from a sound state, every
   state reachable by any sequence of commands is sound. A sound state also
   keeps the player within the speed limit, aware of whether they stand on
-  something, and carrying neither air nor bedrock.
-* **Only what can be seen matters.** Two states with the same player, inventory
-  and selected slot, and the same block at every position, stay that way under
-  any commands, however differently their worlds are stored.
+  something, and carrying neither air nor bedrock, and keeps every creature
+  clear of blocks, above the floor, within the speed limit and aware of
+  whether it stands on something.
+* **Only what can be seen matters.** Two states with the same player,
+  inventory, selected slot, creatures and random number generator, and the
+  same block at every position, stay that way under any commands, however
+  differently their worlds are stored.
 -/
 
 namespace LeanMc
@@ -43,6 +47,14 @@ theorem Block.ne_air_of_solid {b : Block} (h : b.isSolid = true) : b ≠ .air :=
   cases h
 
 namespace State
+
+/-! ## Who is in the way -/
+
+/-- A cell is clear to place in exactly when neither the player nor any creature stands in it. -/
+theorem not_occupied_iff {s : State} {p : BlockPos} :
+    ¬ s.Occupied p ↔ ¬ (Player.box s.player.pos).Overlaps p
+      ∧ ∀ e ∈ s.entities, ¬ (Entity.box e.pos).Overlaps p := by
+  simp only [Occupied, not_or, not_exists, not_and]
 
 /-! ## Reach -/
 
@@ -118,15 +130,15 @@ theorem target_touches {s : State} {look : Vec3} {hit : RayHit} (h : s.target lo
 
 /--
 Every change is one of two kinds. Digging: a solid block that is not bedrock
-becomes air and goes into the inventory. Placing: an empty cell the player is
-not standing in is filled with a block taken from the slot in use. Which it is,
-is what the command asked for.
+becomes air and goes into the inventory. Placing: an empty cell nobody is
+standing in is filled with a block taken from the slot in use. Which it is, is
+what the command asked for.
 -/
 theorem change_cases {s : State} {cmd : Command} {c : Change} (h : s.change cmd = some c) :
     (cmd.action = some .dig ∧ c.block = .air ∧ s.world.solid c.pos = true
         ∧ s.world.get c.pos ≠ .bedrock ∧ s.inventory.add (s.world.get c.pos) = some c.inventory)
       ∨ (cmd.action = some .place ∧ s.world.solid c.pos = false
-        ∧ ¬ (Player.box s.player.pos).Overlaps c.pos
+        ∧ ¬ s.Occupied c.pos
         ∧ s.inventory.take (s.slot cmd) = some (c.block, c.inventory)) := by
   unfold change at h
   split at h
@@ -182,12 +194,12 @@ theorem edit_eq_none {s : State} {cmd : Command} (h : s.edit cmd = none) :
 
 /--
 Every edit is one of two kinds: removing a solid block that is not bedrock, or
-filling an empty cell the player is not standing in.
+filling an empty cell nobody is standing in.
 -/
 theorem edit_cases {s : State} {cmd : Command} {p : BlockPos} {b : Block}
     (h : s.edit cmd = some (p, b)) :
     (b = .air ∧ s.world.solid p = true ∧ s.world.get p ≠ .bedrock) ∨
-      (s.world.solid p = false ∧ ¬ (Player.box s.player.pos).Overlaps p) := by
+      (s.world.solid p = false ∧ ¬ s.Occupied p) := by
   obtain ⟨c, hc, rfl, rfl⟩ := change_of_edit h
   rcases change_cases hc with ⟨-, h1, h2, h3, -⟩ | ⟨-, h1, h2, -⟩
   · exact .inl ⟨h1, h2, h3⟩
@@ -248,12 +260,12 @@ theorem edit_dig {s : State} {cmd : Command} {hit : RayHit} {inv : Inventory}
 
 /--
 **Placing works.** Placing against a targeted face, with a block in the slot in
-use, always fills the cell in front of it unless the player is standing there.
+use, always fills the cell in front of it unless someone is standing there.
 -/
 theorem edit_place {s : State} {cmd : Command} {hit : RayHit} {f : Dir} {b : Block}
     {inv : Inventory} (ht : s.target cmd.look = some hit) (hp : cmd.action = some .place)
     (hf : hit.face = some f) (hhave : s.inventory.take (s.slot cmd) = some (b, inv))
-    (ho : ¬ (Player.box s.player.pos).Overlaps (hit.block.step f)) :
+    (ho : ¬ s.Occupied (hit.block.step f)) :
     s.edit cmd = some (hit.block.step f, b) := by
   simp [edit, change, ht, hp, hf, hhave, ho]
 
@@ -298,11 +310,11 @@ theorem step_dig {s : State} {cmd : Command} {hit : RayHit} {inv : Inventory}
     (s.step cmd).world.get hit.block = .air :=
   step_get_of_edit (edit_dig ht hd hb hroom)
 
-/-- After placing a carried block against a face the player is clear of, the block is there. -/
+/-- After placing a carried block against a face nobody is standing at, the block is there. -/
 theorem step_place {s : State} {cmd : Command} {hit : RayHit} {f : Dir} {b : Block}
     {inv : Inventory} (ht : s.target cmd.look = some hit) (hp : cmd.action = some .place)
     (hf : hit.face = some f) (hhave : s.inventory.take (s.slot cmd) = some (b, inv))
-    (ho : ¬ (Player.box s.player.pos).Overlaps (hit.block.step f)) :
+    (ho : ¬ s.Occupied (hit.block.step f)) :
     (s.step cmd).world.get (hit.block.step f) = b :=
   step_get_of_edit (edit_place ht hp hf hhave ho)
 
@@ -444,12 +456,27 @@ theorem run_terrain (s : State) (cmds : List Command) :
   | nil => rfl
   | cons c cs ih => exact (ih (s.step c)).trans (s.step_terrain c)
 
-/-! ## The player and the invariant -/
+/-- A tick never changes which creatures the world starts each column with. -/
+theorem step_creatures (s : State) (cmd : Command) :
+    (s.step cmd).world.creatures = s.world.creatures := by
+  simp only [step]
+  cases s.change cmd <;> rfl
 
-/-- Neither digging nor placing buries the player. -/
-theorem free_after_edit {s : State} (cmd : Command)
-    (h : Player.Free s.world.solid s.player.pos) :
-    Player.Free (s.step cmd).world.solid s.player.pos := by
+theorem run_creatures (s : State) (cmds : List Command) :
+    (s.run cmds).world.creatures = s.world.creatures := by
+  induction cmds generalizing s with
+  | nil => rfl
+  | cons c cs ih => exact (ih (s.step c)).trans (s.step_creatures c)
+
+/-! ## The player, the creatures and the invariant -/
+
+/--
+Neither digging nor placing buries anyone. A body that is clear of blocks, and
+whose cells count as occupied, is still clear once the tick's edit is made.
+-/
+theorem free_after_edit {s : State} (cmd : Command) {sh : Shape} {pos : Vec3}
+    (h : sh.Free s.world.solid pos) (hocc : ∀ p, (sh.box pos).Overlaps p → s.Occupied p) :
+    sh.Free (s.step cmd).world.solid pos := by
   intro q hq
   cases he : s.edit cmd with
   | none =>
@@ -461,18 +488,247 @@ theorem free_after_edit {s : State} (cmd : Command)
     · subst hp
       rcases edit_cases he with ⟨rfl, -, -⟩ | ⟨-, ho⟩
       · simp [World.solid, step_get_of_edit he, Block.isSolid]
-      · exact absurd hq ho
+      · exact absurd (hocc q hq) ho
     · simp only [World.solid, step_get_of_ne he hp]
       exact h q hq
 
 theorem step_player (s : State) (cmd : Command) :
     (s.step cmd).player = s.player.step (s.step cmd).world.solid cmd.move := rfl
 
+/-- The creatures as a tick's movement leaves them, before any new ones are made. -/
+def stepped (s : State) (cmd : Command) : List Entity × Rng :=
+  Entity.stepAll (s.step cmd).world.solid (fun e => loaded s.centre e.chunk) s.rng s.entities
+
+theorem step_entities (s : State) (cmd : Command) :
+    (s.step cmd).entities =
+      (if (s.step cmd).player.chunk = s.centre then ((s.stepped cmd).1, s.populated)
+        else populate (s.step cmd).world (s.step cmd).player.chunk (s.stepped cmd).1 s.populated).1 :=
+  rfl
+
+theorem step_populated (s : State) (cmd : Command) :
+    (s.step cmd).populated =
+      (if (s.step cmd).player.chunk = s.centre then ((s.stepped cmd).1, s.populated)
+        else populate (s.step cmd).world (s.step cmd).player.chunk (s.stepped cmd).1 s.populated).2 :=
+  rfl
+
+/-- The generator a tick leaves is the one its creatures left. -/
+theorem step_rng (s : State) (cmd : Command) : (s.step cmd).rng = (s.stepped cmd).2 := rfl
+
 /-- **The player is never buried.** A tick, edit and movement together, keeps the player free. -/
 theorem step_free {s : State} (cmd : Command) (h : Player.Free s.world.solid s.player.pos) :
     Player.Free (s.step cmd).world.solid (s.step cmd).player.pos := by
   rw [step_player]
-  exact Player.step_free cmd.move (free_after_edit cmd h)
+  exact Player.step_free cmd.move (free_after_edit cmd h (fun _ hp => .inl hp))
+
+/-- While the floor is intact before a tick, it is solid after it. -/
+theorem step_floor_solid {s : State} (cmd : Command) (h : ∀ x z, s.world.get ⟨x, 0, z⟩ = .bedrock)
+    (x z : Int) : (s.step cmd).world.solid ⟨x, 0, z⟩ = true := by
+  show ((s.step cmd).world.get ⟨x, 0, z⟩).isSolid = true
+  rw [step_bedrock s cmd (h x z)]
+  rfl
+
+/-! ## Loading -/
+
+theorem foldl_populateColumn_entities (world : World) (columns : List (Int × Int))
+    (acc : List Entity × Std.HashSet (Int × Int)) :
+    ∃ new, (columns.foldl (populateColumn world) acc).1 = acc.1 ++ new
+      ∧ ∀ e ∈ new, e.Sound world.solid := by
+  induction columns generalizing acc with
+  | nil => exact ⟨[], by simp, fun _ h => by cases h⟩
+  | cons c cs ih =>
+    obtain ⟨new, heq, hnew⟩ := ih (populateColumn world acc c)
+    simp only [List.foldl_cons, heq]
+    unfold populateColumn
+    split
+    · exact ⟨new, rfl, hnew⟩
+    · refine ⟨(world.creatures c.1 c.2).filter (fun e => decide (e.Sound world.solid)) ++ new,
+        by simp only [List.append_assoc], fun e he => ?_⟩
+      rcases List.mem_append.mp he with he | he
+      · simpa using (List.mem_filter.mp he).2
+      · exact hnew e he
+
+/--
+**Populating only adds creatures, and only sound ones.** The creatures there
+were are still there, in the same places in the list, and each new one is
+clear of blocks, above the floor, at rest and grounded in the world as it is.
+-/
+theorem populate_entities (world : World) (centre : ChunkPos) (entities : List Entity)
+    (populated : Std.HashSet (Int × Int)) :
+    ∃ new, (populate world centre entities populated).1 = entities ++ new
+      ∧ ∀ e ∈ new, e.Sound world.solid :=
+  foldl_populateColumn_entities ..
+
+theorem foldl_populateColumn_contains (world : World) (columns : List (Int × Int))
+    (acc : List Entity × Std.HashSet (Int × Int)) :
+    (∀ c, acc.2.contains c = true →
+        (columns.foldl (populateColumn world) acc).2.contains c = true)
+      ∧ ∀ c ∈ columns, (columns.foldl (populateColumn world) acc).2.contains c = true := by
+  induction columns generalizing acc with
+  | nil => exact ⟨fun _ h => h, fun _ h => by cases h⟩
+  | cons col cols ih =>
+    have hkeep : ∀ c, acc.2.contains c = true → (populateColumn world acc col).2.contains c = true := by
+      intro c hc
+      unfold populateColumn
+      split
+      · exact hc
+      · simp [Std.HashSet.contains_insert, hc]
+    have hcol : (populateColumn world acc col).2.contains col = true := by
+      unfold populateColumn
+      split
+      · assumption
+      · simp [Std.HashSet.contains_insert]
+    obtain ⟨hmono, hall⟩ := ih (populateColumn world acc col)
+    refine ⟨fun c hc => hmono c (hkeep c hc), fun c hc => ?_⟩
+    rcases List.mem_cons.mp hc with rfl | hc
+    · exact hmono _ hcol
+    · exact hall c hc
+
+/-- Populating forgets no column, and does every column loaded around the centre. -/
+theorem populate_populated (world : World) (centre : ChunkPos) (entities : List Entity)
+    (populated : Std.HashSet (Int × Int)) :
+    (∀ c, populated.contains c = true →
+        (populate world centre entities populated).2.contains c = true)
+      ∧ ∀ c ∈ loadedColumns centre,
+        (populate world centre entities populated).2.contains c = true :=
+  foldl_populateColumn_contains world (loadedColumns centre) (entities, populated)
+
+/--
+**A column's creatures are made once.** Where every loaded column has had its
+creatures made, populating again makes nothing and changes nothing.
+-/
+theorem populate_of_populated {world : World} {centre : ChunkPos} {entities : List Entity}
+    {populated : Std.HashSet (Int × Int)}
+    (h : ∀ c ∈ loadedColumns centre, populated.contains c = true) :
+    populate world centre entities populated = (entities, populated) := by
+  unfold populate
+  generalize loadedColumns centre = columns at h
+  induction columns with
+  | nil => rfl
+  | cons col cols ih =>
+    have hcol : populateColumn world (entities, populated) col = (entities, populated) := by
+      simp [populateColumn, h col List.mem_cons_self]
+    rw [List.foldl_cons, hcol]
+    exact ih fun c hc => h c (List.mem_cons_of_mem _ hc)
+
+/-- Every column of chunks loaded around the player has had its creatures made. -/
+def Populated (s : State) : Prop :=
+  ∀ c ∈ loadedColumns s.centre, s.populated.contains c = true
+
+/-- A tick forgets no column whose creatures have been made. -/
+theorem step_populated_mono (s : State) (cmd : Command) {c : Int × Int}
+    (h : s.populated.contains c = true) : (s.step cmd).populated.contains c = true := by
+  rw [step_populated]
+  split
+  · exact h
+  · exact (populate_populated ..).1 c h
+
+/--
+**Whatever is loaded has been populated.** If every column loaded around the
+player has had its creatures made, the same is true after a tick, wherever the
+player has gone.
+-/
+theorem Populated.step {s : State} (h : s.Populated) (cmd : Command) : (s.step cmd).Populated := by
+  intro c hc
+  rw [step_populated]
+  split
+  · next heq =>
+    rw [centre, heq] at hc
+    exact h c hc
+  · exact (populate_populated ..).2 c hc
+
+theorem Populated.run {s : State} (h : s.Populated) (cmds : List Command) :
+    (s.run cmds).Populated := by
+  induction cmds generalizing s with
+  | nil => exact h
+  | cons cmd cmds ih => exact ih (h.step cmd)
+
+/-- A tick's creatures are the ones it moved, followed by any it made. -/
+theorem step_entities_append (s : State) (cmd : Command) :
+    ∃ new, (s.step cmd).entities = (s.stepped cmd).1 ++ new
+      ∧ ∀ e ∈ new, e.Sound (s.step cmd).world.solid := by
+  rw [step_entities]
+  split
+  · exact ⟨[], by simp, fun _ h => by cases h⟩
+  · exact populate_entities ..
+
+/--
+**Creatures in unloaded chunks do not move.** A creature whose chunk is not
+loaded when a tick begins is exactly as it was when the tick ends, whatever the
+player does.
+-/
+theorem step_asleep {s : State} (cmd : Command) {i : Nat} {e : Entity}
+    (he : s.entities[i]? = some e) (hfar : loaded s.centre e.chunk = false) :
+    (s.step cmd).entities[i]? = some e := by
+  obtain ⟨new, heq, -⟩ := step_entities_append s cmd
+  have hstay : (s.stepped cmd).1[i]? = some e :=
+    Entity.stepAll_asleep _ (awake := fun e => loaded s.centre e.chunk) s.rng he hfar
+  have hi : i < (s.stepped cmd).1.length := by
+    cases h : (s.stepped cmd).1[i]? with
+    | none => rw [h] at hstay; cases hstay
+    | some _ => exact (List.getElem?_eq_some_iff.mp h).1
+  rw [heq, List.getElem?_append_left hi, hstay]
+
+/-- A tick never loses a creature: there are at least as many after it as before. -/
+theorem step_entities_length (s : State) (cmd : Command) :
+    s.entities.length ≤ (s.step cmd).entities.length := by
+  obtain ⟨new, heq, -⟩ := step_entities_append s cmd
+  rw [heq, List.length_append, stepped, Entity.stepAll_length]
+  omega
+
+/--
+**Edits are out of reach of unloaded chunks.** The cell a tick changes is
+within five blocks of the player's eyes, and a creature in an unloaded chunk
+is far further off than that. So the edit touches neither the creature nor the
+ground beneath it.
+-/
+theorem edit_clear_of_unloaded {s : State} {cmd : Command} {p : BlockPos} {b : Block}
+    (h : s.edit cmd = some (p, b)) {pos : Vec3}
+    (hfar : loaded s.centre pos.blockPos.chunkPos = false) :
+    ¬ (Entity.shape.box (pos.add .y (-1))).Overlaps p := by
+  have hn := edit_near h
+  simp only [loaded, loadRange, ViewRange.contains, centre, Player.chunk, Vec3.blockPos,
+    BlockPos.chunkPos, Bool.and_eq_false_iff, Nat.add_zero] at hfar
+  simp only [Box.Overlaps, Shape.box, Entity.shape, Entity.halfWidth, Entity.height, Vec3.add,
+    eye, Vec3.blockPos] at hn ⊢
+  rcases hfar with (hfar | hfar) | hfar <;> have := of_decide_eq_false hfar <;> omega
+
+/-- A body that the tick's edit does not touch is blocked after it exactly when it was before. -/
+theorem blocked_step_of_clear {s : State} {cmd : Command} {sh : Shape} {q : Vec3}
+    (h : ∀ p b, s.edit cmd = some (p, b) → ¬ (sh.box q).Overlaps p) :
+    sh.blocked (s.step cmd).world.solid q = sh.blocked s.world.solid q := by
+  have hget : ∀ p, (sh.box q).Overlaps p → (s.step cmd).world.get p = s.world.get p := by
+    intro p hp
+    cases he : s.edit cmd with
+    | none => exact step_get_of_edit_none he p
+    | some e => exact step_get_of_ne (p := e.1) (b := e.2) he (fun eq => h e.1 e.2 he (eq ▸ hp))
+  rw [Bool.eq_iff_iff]
+  unfold Shape.blocked
+  rw [Box.collides_eq_true_iff, Box.collides_eq_true_iff]
+  constructor
+  · rintro ⟨p, hp, hs⟩
+    exact ⟨p, hp, by simpa only [World.solid, hget p hp] using hs⟩
+  · rintro ⟨p, hp, hs⟩
+    exact ⟨p, hp, by simpa only [World.solid, hget p hp] using hs⟩
+
+/--
+**No creature is ever buried, and none falls out of the world.** A tick, edit
+and movement together, leaves every creature sound if each was sound before
+it: those that moved, those in unloaded chunks that did not, and any it made.
+-/
+theorem step_entities_sound {s : State} (cmd : Command)
+    (hfloor : ∀ x z, s.world.get ⟨x, 0, z⟩ = .bedrock)
+    (h : ∀ e ∈ s.entities, e.Sound s.world.solid) :
+    ∀ e ∈ (s.step cmd).entities, e.Sound (s.step cmd).world.solid := by
+  obtain ⟨new, heq, hnew⟩ := step_entities_append s cmd
+  rw [heq]
+  intro e he
+  rcases List.mem_append.mp he with he | he
+  · refine Entity.stepAll_sound (step_floor_solid cmd hfloor) _ s.rng (fun e he =>
+      ⟨free_after_edit cmd (h e he).free (fun _ hp => .inr ⟨e, he, hp⟩), (h e he).above,
+        (h e he).speed⟩) (fun e he hfar => ?_) e he
+    rw [(h e he).grounded]
+    exact (blocked_step_of_clear fun p b hedit => edit_clear_of_unloaded hedit hfar).symm
+  · exact hnew e he
 
 /-- Air is never carried: only solid blocks are ever picked up. -/
 theorem step_noAir {s : State} (cmd : Command) (h : s.inventory.NoAir) :
@@ -512,29 +768,27 @@ structure Sound (s : State) : Prop where
   speed : s.player.SpeedBounded
   /-- The player knows whether they are standing on something. -/
   grounded : s.player.onGround = Player.blocked s.world.solid (s.player.pos.add .y (-1))
+  /-- Every creature is clear of blocks, above the floor, within the speed limit and grounded. -/
+  entities : ∀ e ∈ s.entities, e.Sound s.world.solid
 
 theorem Sound.step {s : State} (h : Sound s) (cmd : Command) : Sound (s.step cmd) where
   free := step_free cmd h.free
   floor x z := step_bedrock s cmd (h.floor x z)
   above := by
     rw [step_player]
-    exact Player.step_above_floor
-      (fun x z => by
-        show ((s.step cmd).world.get ⟨x, 0, z⟩).isSolid = true
-        rw [step_bedrock s cmd (h.floor x z)]
-        rfl)
-      cmd.move h.above
+    exact Player.step_above_floor (step_floor_solid cmd h.floor) cmd.move h.above
   items := step_noAir cmd h.items
   bedrock := step_noBedrock cmd h.bedrock
   speed := by
     rw [step_player]
     exact Player.step_speedBounded _ _ h.speed
   grounded := rfl
+  entities := step_entities_sound cmd h.floor h.entities
 
 /--
 **Soundness is an invariant.** From a sound state, no sequence of commands,
-however long or adversarial, buries the player, breaks the floor or drops the
-player through it.
+however long or adversarial, buries the player or a creature, breaks the floor
+or drops anyone through it.
 -/
 theorem Sound.run {s : State} (h : Sound s) (cmds : List Command) : Sound (s.run cmds) := by
   induction cmds generalizing s with
@@ -556,8 +810,8 @@ theorem Sound.target_face {s : State} (h : s.Sound) {look : Vec3} {hit : RayHit}
     exfalso
     have hsolid := Ray.cast_face_none ht hf
     have hov : (Player.box s.player.pos).Overlaps s.eye.blockPos := by
-      simp only [Box.Overlaps, Player.box, State.eye, Vec3.add, Vec3.blockPos, Player.halfWidth,
-        Player.height, Player.eyeHeight]
+      simp only [Box.Overlaps, Player.box, Shape.box, Player.shape, State.eye, Player.eye,
+        Vec3.add, Vec3.blockPos, Player.halfWidth, Player.height, Player.eyeHeight]
       omega
     have := h.free _ hov
     simp only [World.solid] at this hsolid
@@ -567,12 +821,12 @@ theorem Sound.target_face {s : State} (h : s.Sound) {look : Vec3} {hit : RayHit}
 /--
 **Placing works, in a sound state.** Asking to place while targeting a block,
 with a block in the slot in use, always fills the cell in front of the targeted
-face unless the player is standing there. Nothing else can refuse it.
+face unless someone is standing there. Nothing else can refuse it.
 -/
 theorem Sound.edit_place {s : State} (h : s.Sound) {cmd : Command} {hit : RayHit} {b : Block}
     {inv : Inventory} (ht : s.target cmd.look = some hit) (hp : cmd.action = some .place)
     (hhave : s.inventory.take (s.slot cmd) = some (b, inv))
-    (ho : ∀ f, hit.face = some f → ¬ (Player.box s.player.pos).Overlaps (hit.block.step f)) :
+    (ho : ∀ f, hit.face = some f → ¬ s.Occupied (hit.block.step f)) :
     ∃ f, hit.face = some f ∧ s.edit cmd = some (hit.block.step f, b) := by
   obtain ⟨f, hf⟩ := h.target_face ht
   exact ⟨f, hf, State.edit_place ht hp hf hhave (ho f hf)⟩
@@ -606,24 +860,67 @@ theorem Sound.intent_airborne {s : State} (h : s.Sound) (input : Input)
     (hair : Player.blocked s.world.solid (s.player.pos.add .y (-1)) = false)
     (hfly : (s.player.flying != input.toggleFly) = false) :
     (Player.intent input s.player).y
-      = max (-Player.maxSpeed) (s.player.vel.y - Player.gravity) :=
+      = max (-Body.maxSpeed) (s.player.vel.y - Body.gravity) :=
   Player.intent_airborne input (h.grounded.trans hair) hfly
 
 /-! ## Only what can be seen matters -/
 
 /--
-Two states that cannot be told apart: the same player, inventory and selected
-slot, and the same block at every position. Their worlds may still be stored
-differently, as a played world and the same world loaded from a file are.
+Populating depends on a world only through what is solid and which creatures
+it gives each column, and on the columns done only through which they are.
+-/
+theorem populate_congr {world world' : World} (hsolid : world.solid = world'.solid)
+    (hcreatures : world.creatures = world'.creatures) (centre : ChunkPos)
+    (entities : List Entity) {populated populated' : Std.HashSet (Int × Int)}
+    (hp : ∀ c, populated.contains c = populated'.contains c) :
+    (populate world centre entities populated).1 = (populate world' centre entities populated').1
+      ∧ ∀ c, (populate world centre entities populated).2.contains c
+        = (populate world' centre entities populated').2.contains c := by
+  unfold populate
+  generalize loadedColumns centre = columns
+  have key : ∀ (acc acc' : List Entity × Std.HashSet (Int × Int)), acc.1 = acc'.1 →
+      (∀ c, acc.2.contains c = acc'.2.contains c) →
+      (columns.foldl (populateColumn world) acc).1 = (columns.foldl (populateColumn world') acc').1
+        ∧ ∀ c, (columns.foldl (populateColumn world) acc).2.contains c
+          = (columns.foldl (populateColumn world') acc').2.contains c := by
+    induction columns with
+    | nil => exact fun _ _ h1 h2 => ⟨h1, h2⟩
+    | cons col cols ih =>
+      intro acc acc' h1 h2
+      simp only [List.foldl_cons]
+      apply ih
+      · simp only [populateColumn, h2 col]
+        split
+        · exact h1
+        · simp only [h1, hsolid, hcreatures]
+      · intro c
+        simp only [populateColumn, h2 col]
+        split
+        · exact h2 c
+        · simp only [Std.HashSet.contains_insert, h2 c]
+  exact key _ _ rfl hp
+
+/--
+Two states that cannot be told apart: the same player, inventory, selected
+slot, creatures and random number generator, and the same block at every
+position. Their worlds may still be stored differently, as a played world and
+the same world loaded from a file are.
 -/
 structure Same (s t : State) : Prop where
   player : s.player = t.player
   inventory : s.inventory = t.inventory
   selected : s.selected = t.selected
+  entities : s.entities = t.entities
+  rng : s.rng = t.rng
+  /-- The same columns of chunks have had their creatures made. -/
+  populated : ∀ c, s.populated.contains c = t.populated.contains c
+  /-- The worlds give each column the same creatures. -/
+  creatures : s.world.creatures = t.world.creatures
   world : ∀ p, s.world.get p = t.world.get p
 
 theorem Same.rfl {s : State} : Same s s :=
-  ⟨Eq.refl _, Eq.refl _, Eq.refl _, fun _ => Eq.refl _⟩
+  ⟨Eq.refl _, Eq.refl _, Eq.refl _, Eq.refl _, Eq.refl _, fun _ => Eq.refl _, Eq.refl _,
+    fun _ => Eq.refl _⟩
 
 theorem Same.solid {s t : State} (h : Same s t) : s.world.solid = t.world.solid :=
   funext fun p => by simp only [World.solid, h.world]
@@ -632,8 +929,8 @@ theorem Same.solid {s t : State} (h : Same s t) : s.world.solid = t.world.solid 
 theorem Same.change {s t : State} (h : Same s t) (cmd : Command) :
     s.change cmd = t.change cmd := by
   have hg : s.world.get = t.world.get := funext h.world
-  simp only [State.change, State.target, State.eye, State.slot, h.solid, hg, h.player,
-    h.inventory, h.selected]
+  simp only [State.change, State.target, State.eye, State.slot, State.Occupied, h.solid, hg,
+    h.player, h.inventory, h.selected, h.entities]
 
 /-- A tick keeps them that way. -/
 theorem Same.step {s t : State} (h : Same s t) (cmd : Command) :
@@ -647,10 +944,28 @@ theorem Same.step {s t : State} (h : Same s t) (cmd : Command) :
     | some c => simp only [World.get_set, h.world]
   have hsolid : (s.step cmd).world.solid = (t.step cmd).world.solid :=
     funext fun p => by simp only [World.solid, hworld]
-  refine ⟨?_, ?_, ?_, hworld⟩
-  · rw [step_player, step_player, hsolid, h.player]
+  have hplayer : (s.step cmd).player = (t.step cmd).player := by
+    rw [step_player, step_player, hsolid, h.player]
+  have hcentre : s.centre = t.centre := by rw [centre, centre, h.player]
+  have hstepped : s.stepped cmd = t.stepped cmd := by
+    rw [stepped, stepped, hsolid, hcentre, h.entities, h.rng]
+  have hcreatures : (s.step cmd).world.creatures = (t.step cmd).world.creatures := by
+    rw [step_creatures, step_creatures, h.creatures]
+  have hgrown := populate_congr hsolid hcreatures (t.step cmd).player.chunk (t.stepped cmd).1
+    h.populated
+  refine ⟨hplayer, ?_, ?_, ?_, ?_, ?_, hcreatures, hworld⟩
   · rw [step_inventory, step_inventory, hc, h.inventory]
   · rw [step_selected, step_selected, h.selected]
+  · rw [step_entities, step_entities, hplayer, hcentre, hstepped]
+    split
+    · rfl
+    · exact hgrown.1
+  · rw [step_rng, step_rng, hstepped]
+  · intro c
+    rw [step_populated, step_populated, hplayer, hcentre, hstepped]
+    split
+    · exact h.populated c
+    · exact hgrown.2 c
 
 /--
 **Only what can be seen matters.** States that cannot be told apart stay that

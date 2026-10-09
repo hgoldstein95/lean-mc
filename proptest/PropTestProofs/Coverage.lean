@@ -135,37 +135,81 @@ theorem genGpuCmd_covers_misuse :
 /-- **A save that does not load**: one with a hole in the bedrock floor. -/
 theorem genSaveData_covers_unloadable :
     ∃ d ∈ SPMF.support genSaveData, d.restore? = none := by
-  refine ⟨(⟨0, { pos := ⟨0, 0, 0⟩ }, {}, 0, [(⟨0, 0, 0⟩, .stone)]⟩ : SaveData),
+  refine ⟨(⟨0, ⟨0⟩, { pos := ⟨0, 0, 0⟩ }, {}, 0, [], [], [(⟨0, 0, 0⟩, .stone)]⟩ : SaveData),
     genSaveData.sound_complete.complete _ (by decide), ?_⟩
   simp [SaveData.restore?]
+
+/-- A long way above everything that is generated. -/
+def sky : Vec3 := ⟨0, 1000000000000000000000, 0⟩
+
+/-- Nothing is generated that high, so a body there is clear of every block. -/
+theorem free_high (sh : Shape) (pos : Vec3) (hy : 100000000000000000000 ≤ pos.y) :
+    sh.blocked (Terrain.world 0).solid pos = false := by
+  refine Shape.blocked_eq_false_iff.mpr fun q hq => ?_
+  have hq' : Terrain.maxHeight + Terrain.maxTreeHeight < q.y := by
+    simp only [Box.Overlaps, Shape.box, Terrain.maxHeight, Terrain.maxTreeHeight] at hq ⊢
+    omega
+  simp [World.solid, Terrain.generate_above 0 hq', Block.isSolid]
+
+/-- A player falling from the sky, with nothing in hand, in an untouched world with no fox. -/
+def falling : SaveData := ⟨0, ⟨0⟩, { pos := sky }, {}, 0, [], [], []⟩
+
+theorem falling_loads : falling.restore?.isSome = true := by
+  unfold SaveData.restore?
+  split
+  · unfold Session.resume?
+    split
+    · rfl
+    · next h =>
+      exact absurd ⟨free_high _ _ (by decide), by decide, by decide,
+        (free_high _ _ (by decide)).symm, by decide, by decide, by simp [falling]⟩ h
+  · next h => exact absurd rfl h
 
 /--
 **A save that does load**: a player falling from far above everything, with
 nothing in hand, in an untouched world. So the generator reaches both sides of
-every check loading makes.
+every check loading makes of the player.
 -/
 theorem genSaveData_covers_loadable :
-    ∃ d ∈ SPMF.support genSaveData, d.restore?.isSome = true := by
-  refine ⟨(⟨0, { pos := ⟨0, 1000000000000000000000, 0⟩ }, {}, 0, []⟩ : SaveData),
-    genSaveData.sound_complete.complete _ (by decide), ?_⟩
-  -- Nothing is generated that high, so a player there is clear of every block.
-  have hfree : ∀ pos : Vec3, 100000000000000000000 ≤ pos.y →
-      Player.blocked (Terrain.world 0).solid pos = false := by
-    intro pos hy
-    refine Player.blocked_eq_false_iff.mpr fun q hq => ?_
-    have hq' : Terrain.maxHeight + Terrain.maxTreeHeight < q.y := by
-      simp only [Box.Overlaps, Player.box, Player.height, Terrain.maxHeight,
-        Terrain.maxTreeHeight] at hq ⊢
-      omega
-    simp [World.solid, Terrain.generate_above 0 hq', Block.isSolid]
+    ∃ d ∈ SPMF.support genSaveData, d.restore?.isSome = true :=
+  ⟨falling, genSaveData.sound_complete.complete _ (by decide), falling_loads⟩
+
+/-- **A save with a fox that loads**: the same, with a fox falling beside the player. -/
+theorem genSaveData_covers_fox :
+    ∃ d ∈ SPMF.support genSaveData, d.entities ≠ [] ∧ d.restore?.isSome = true := by
+  refine ⟨{ falling with entities := [{ pos := sky }] },
+    genSaveData.sound_complete.complete _ (by decide), by simp, ?_⟩
   unfold SaveData.restore?
   split
-  · unfold Session.start?
+  · unfold Session.resume?
     split
     · rfl
     · next h =>
-      exact absurd ⟨hfree _ (by decide), by decide, by decide,
-        (hfree _ (by decide)).symm, by decide, by decide⟩ h
+      refine absurd ⟨free_high _ _ (by decide), by decide, by decide,
+        (free_high _ _ (by decide)).symm, by decide, by decide, ?_⟩ h
+      intro e he
+      simp only [List.mem_singleton] at he
+      subst he
+      exact ⟨Shape.blocked_eq_false_iff.mp (free_high _ _ (by decide)), by decide, by decide,
+        (free_high _ _ (by decide)).symm⟩
   · next h => exact absurd rfl h
+
+/--
+**A save refused for its fox alone**: the same again, with the fox below the
+floor. Without the fox it loads, so the generator reaches both sides of the
+checks loading makes of a creature too.
+-/
+theorem genSaveData_covers_unsound_fox :
+    ∃ d ∈ SPMF.support genSaveData, d.restore? = none
+      ∧ ({ d with entities := [] } : SaveData).restore?.isSome = true := by
+  refine ⟨{ falling with entities := [{ pos := ⟨0, 0, 0⟩ }] },
+    genSaveData.sound_complete.complete _ (by decide), ?_, falling_loads⟩
+  unfold SaveData.restore?
+  split
+  · unfold Session.resume?
+    split
+    · next h => exact absurd (h.2.2.2.2.2.2 _ List.mem_cons_self).above (by decide)
+    · rfl
+  · rfl
 
 end PropTest

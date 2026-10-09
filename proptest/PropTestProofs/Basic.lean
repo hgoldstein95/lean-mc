@@ -200,6 +200,24 @@ theorem genSlot9.cost_bounded : IsCostBounded genSlot9 fun _ => 1 := by
   walk fixpoint
   all_goals omega
 
+theorem genHeading.sound_complete : IsSoundAndComplete genHeading fun _ => True := by
+  refine .intro (fun _ _ => trivial) ?complete
+  intro i _
+  rw [genHeading, SPMF.mem_support_iff_may]; walk
+  exact ⟨i.val, by omega, by simp [Nat.mod_eq_of_lt i.isLt]⟩
+
+theorem genHeading.terminates : IsAlmostSurelyTerminating genHeading := by
+  mass_fixpoint using SPMF.LfpIsOne.one
+  mass_arith
+
+theorem genHeading.faithful : IsFaithful genHeading := by
+  faithful_fixpoint [genHeading.terminates]
+
+theorem genHeading.cost_bounded : IsCostBounded genHeading fun _ => 1 := by
+  rw [IsCostBounded.iff_obs]
+  walk fixpoint
+  all_goals omega
+
 theorem genAction.sound_complete : IsSoundAndComplete genAction fun _ => True := by
   refine .intro (fun _ _ => trivial) ?complete
   intro a _

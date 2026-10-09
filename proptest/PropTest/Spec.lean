@@ -128,11 +128,30 @@ instance (p : Player) : Decidable (PlayerOK p) :=
   inferInstanceAs (Decidable (_ ∧ _))
 
 /--
+A fox `genEntity` can produce: any heading and flags, at a wide position and
+velocity, with up to 400 ticks on its timer.
+-/
+def EntityOK (e : Entity) : Prop :=
+  WideVec e.pos ∧ WideVec e.vel ∧ e.timer ≤ 400
+
+instance (e : Entity) : Decidable (EntityOK e) :=
+  inferInstanceAs (Decidable (_ ∧ _))
+
+/-- A column of chunks `genColumn` can produce: wide coordinates. -/
+def ColumnOK (c : Int × Int) : Prop :=
+  Wide c.1 ∧ Wide c.2
+
+instance (c : Int × Int) : Decidable (ColumnOK c) :=
+  inferInstanceAs (Decidable (_ ∧ _))
+
+/--
 A saved game `genSaveData` can produce. Nothing here says the game is sound:
 the generator is meant to produce saves that load and saves that do not.
 -/
 def SaveOK (d : SaveData) : Prop :=
-  SeedOK d.seed ∧ PlayerOK d.player ∧ d.edits.length ≤ 12 ∧ ∀ e ∈ d.edits, EditOK e
+  SeedOK d.seed ∧ PlayerOK d.player ∧ d.edits.length ≤ 12 ∧ (∀ e ∈ d.edits, EditOK e)
+    ∧ SeedOK d.rng.state ∧ d.entities.length ≤ 3 ∧ (∀ e ∈ d.entities, EntityOK e)
+    ∧ d.populated.length ≤ 4 ∧ ∀ c ∈ d.populated, ColumnOK c
 
 instance (d : SaveData) : Decidable (SaveOK d) :=
   inferInstanceAs (Decidable (_ ∧ _))

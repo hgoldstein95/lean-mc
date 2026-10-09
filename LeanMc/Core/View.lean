@@ -5,11 +5,14 @@ import LeanMc.Core.Physics
 /-!
 # What to keep loaded and what to rebuild
 
-Two decisions the renderer depends on, kept here so that they can be proved:
+Two decisions kept here so that they can be proved:
 
-* which chunks are in view of a given chunk, and which are far enough away to
+* which chunks are in range of a given chunk, and which are far enough away to
   drop; and
 * which chunks' meshes a block change can affect.
+
+The game uses the first to say which chunks are loaded, and the renderer draws
+the same ones.
 
 Getting either wrong shows as holes in the world or as faces that linger after
 a block has gone.
@@ -35,6 +38,11 @@ def offsets (v : ViewRange) : List (Int × Int × Int) :=
   (intRange (-v.radius) v.radius).flatMap fun dx =>
     (intRange (-v.radiusY) v.radiusY).flatMap fun dy =>
       (intRange (-v.radius) v.radius).map fun dz => (dx, dy, dz)
+
+/-- Every offset from a centre chunk to a column of chunks with a chunk in view. -/
+def columns (v : ViewRange) : List (Int × Int) :=
+  (intRange (-v.radius) v.radius).flatMap fun dx =>
+    (intRange (-v.radius) v.radius).map fun dz => (dx, dz)
 
 /-- The chunk at an offset from a centre. -/
 def offsetChunk (centre : ChunkPos) (o : Int × Int × Int) : ChunkPos :=

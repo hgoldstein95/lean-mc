@@ -161,6 +161,56 @@ theorem genPlayer.cost_bounded : IsCostBounded genPlayer fun _ => 14 := by
   walk fixpoint [genWideVec.cost_bounded.obs]
   all_goals omega
 
+theorem genColumn.sound_complete : IsSoundAndComplete genColumn Spec.ColumnOK := by
+  refine .intro ?sound ?complete
+  case sound =>
+    rw [IsSoundFor.iff_obs]
+    walk fixpoint [genWideInt.sound_complete.sound.obs]
+    exact ⟨‹_›, ‹_›⟩
+  case complete =>
+    intro c hc
+    rw [genColumn, SPMF.mem_support_iff_may]
+    walk [genWideInt.sound_complete.complete.obs]
+    exact ⟨c.1, hc.1, c.2, hc.2, rfl⟩
+
+theorem genColumn.terminates : IsAlmostSurelyTerminating genColumn := by
+  mass_fixpoint [genWideInt.terminates.obs] using SPMF.LfpIsOne.one
+  mass_arith
+
+theorem genColumn.faithful : IsFaithful genColumn := by
+  faithful_fixpoint [genColumn.terminates, genWideInt.faithful]
+
+theorem genColumn.cost_bounded : IsCostBounded genColumn fun _ => 4 := by
+  rw [IsCostBounded.iff_obs]
+  walk fixpoint [genWideInt.cost_bounded.obs]
+  all_goals omega
+
+theorem genEntity.sound_complete : IsSoundAndComplete genEntity Spec.EntityOK := by
+  refine .intro ?sound ?complete
+  case sound =>
+    rw [IsSoundFor.iff_obs]
+    walk fixpoint [genWideVec.sound_complete.sound.obs, genHeading.sound_complete.sound.obs]
+    exact ⟨‹_›, ‹_›, by dsimp only; omega⟩
+  case complete =>
+    intro e he
+    rw [genEntity, SPMF.mem_support_iff_may]
+    walk [genWideVec.sound_complete.complete.obs, chance.complete_obs 50,
+      genHeading.sound_complete.complete.obs]
+    exact ⟨e.pos, he.1, e.vel, he.2.1, e.onGround, e.heading, e.walking, e.timer,
+      ⟨Nat.zero_le _, he.2.2⟩, rfl⟩
+
+theorem genEntity.terminates : IsAlmostSurelyTerminating genEntity := by
+  mass_fixpoint [genWideVec.terminates.obs, genHeading.terminates.obs] using SPMF.LfpIsOne.one
+  mass_arith
+
+theorem genEntity.faithful : IsFaithful genEntity := by
+  faithful_fixpoint [genEntity.terminates, genWideVec.faithful, genHeading.faithful]
+
+theorem genEntity.cost_bounded : IsCostBounded genEntity fun _ => 16 := by
+  rw [IsCostBounded.iff_obs]
+  walk fixpoint [genWideVec.cost_bounded.obs, genHeading.cost_bounded.obs]
+  all_goals omega
+
 /-! ## Saved games -/
 
 theorem genSaveData.sound_complete : IsSoundAndComplete genSaveData Spec.SaveOK := by
@@ -168,6 +218,7 @@ theorem genSaveData.sound_complete : IsSoundAndComplete genSaveData Spec.SaveOK 
   case sound =>
     rw [IsSoundFor.iff_obs]
     walk fixpoint [genSeed.sound_complete.sound.obs, genEdit.sound_complete.sound.obs,
+      genEntity.sound_complete.sound.obs, genColumn.sound_complete.sound.obs,
       genPlayer.sound_complete.sound.obs, genInventory.sound_complete.sound.obs,
       genSlot9.sound_complete.sound.obs]
     simp_all [Spec.SaveOK]
@@ -175,26 +226,37 @@ theorem genSaveData.sound_complete : IsSoundAndComplete genSaveData Spec.SaveOK 
     intro d hd
     rw [genSaveData, SPMF.mem_support_iff_may]
     walk [genSeed.sound_complete.complete.obs, genEdit.sound_complete.complete.obs,
+      genEntity.sound_complete.complete.obs, genColumn.sound_complete.complete.obs,
       genPlayer.sound_complete.complete.obs, genInventory.sound_complete.complete.obs,
       genSlot9.sound_complete.complete.obs]
-    exact ⟨d.seed, hd.1, d.edits, ⟨hd.2.2.1, hd.2.2.2⟩, d.player, hd.2.1, d.inventory,
-      d.selected, rfl⟩
+    exact ⟨d.seed, hd.1, d.edits, ⟨hd.2.2.1, hd.2.2.2.1⟩, d.entities,
+      ⟨hd.2.2.2.2.2.1, hd.2.2.2.2.2.2.1⟩, d.populated,
+      ⟨hd.2.2.2.2.2.2.2.1, hd.2.2.2.2.2.2.2.2⟩, d.rng.state, hd.2.2.2.2.1, d.player, hd.2.1,
+      d.inventory, d.selected, rfl⟩
 
 theorem genSaveData.terminates : IsAlmostSurelyTerminating genSaveData := by
-  mass_fixpoint [genSeed.terminates.obs, genEdit.terminates.obs, genPlayer.terminates.obs,
-    genInventory.terminates.obs, genSlot9.terminates.obs] using SPMF.LfpIsOne.one
+  mass_fixpoint [genSeed.terminates.obs, genEdit.terminates.obs, genEntity.terminates.obs,
+    genColumn.terminates.obs, genPlayer.terminates.obs, genInventory.terminates.obs,
+    genSlot9.terminates.obs]
+    using SPMF.LfpIsOne.one
   mass_arith
 
 theorem genSaveData.faithful : IsFaithful genSaveData := by
   faithful_fixpoint [genSaveData.terminates, genSeed.faithful, genEdit.faithful,
-    genPlayer.faithful, genInventory.faithful, genSlot9.faithful]
+    genEntity.faithful, genColumn.faithful, genPlayer.faithful, genInventory.faithful,
+    genSlot9.faithful]
 
-/-- A saved game takes at most 45 random choices, and 7 more for each edit. -/
+/--
+A saved game takes at most 49 random choices, 7 more for each edit, 16 for each
+fox and 4 for each populated column.
+-/
 theorem genSaveData.cost_bounded :
-    IsCostBounded genSaveData fun d => 45 + 7 * d.edits.length := by
+    IsCostBounded genSaveData fun d =>
+      49 + 7 * d.edits.length + 16 * d.entities.length + 4 * d.populated.length := by
   rw [IsCostBounded.iff_obs]
-  walk fixpoint [genSeed.cost_bounded.obs, genEdit.cost_bounded.obs, genPlayer.cost_bounded.obs,
-    genInventory.cost_bounded.obs, genSlot9.cost_bounded.obs]
+  walk fixpoint [genSeed.cost_bounded.obs, genEdit.cost_bounded.obs, genEntity.cost_bounded.obs,
+    genColumn.cost_bounded.obs, genPlayer.cost_bounded.obs, genInventory.cost_bounded.obs,
+    genSlot9.cost_bounded.obs]
   all_goals simp at *
   all_goals omega
 
@@ -217,10 +279,34 @@ theorem length_flatMap_encodeEdit (l : List (BlockPos × Block)) :
       List.length_nil, ih]
     omega
 
-/-- A saved game is 31 integers and four more for each edit. -/
-theorem length_encode (d : SaveData) : d.encode.length = 31 + 4 * d.edits.length := by
+theorem length_flatMap_encodeEntity (l : List Entity) :
+    (l.flatMap SaveData.encodeEntity).length = 10 * l.length := by
+  induction l with
+  | nil => rfl
+  | cons e l ih =>
+    simp only [List.flatMap_cons, List.length_append, SaveData.encodeEntity, List.length_cons,
+      List.length_nil, ih]
+    omega
+
+theorem length_flatMap_encodeColumn (l : List (Int × Int)) :
+    (l.flatMap SaveData.encodeColumn).length = 2 * l.length := by
+  induction l with
+  | nil => rfl
+  | cons c l ih =>
+    simp only [List.flatMap_cons, List.length_append, SaveData.encodeColumn, List.length_cons,
+      List.length_nil, ih]
+    omega
+
+/--
+A saved game is 34 integers, ten more for each fox, two more for each populated
+column and four more for each edit.
+-/
+theorem length_encode (d : SaveData) :
+    d.encode.length
+      = 34 + 10 * d.entities.length + 2 * d.populated.length + 4 * d.edits.length := by
   simp only [SaveData.encode, List.length_append, List.length_cons, List.length_nil,
-    length_flatMap_encodeSlot, length_flatMap_encodeEdit, Vector.length_toList]
+    length_flatMap_encodeSlot, length_flatMap_encodeEntity, length_flatMap_encodeColumn,
+    length_flatMap_encodeEdit, Vector.length_toList]
   omega
 
 theorem genMutatedSave.sound_complete : IsSoundAndComplete genMutatedSave Spec.MutatedSaveOK := by
@@ -237,6 +323,8 @@ theorem genMutatedSave.sound_complete : IsSoundAndComplete genMutatedSave Spec.M
     walk [genSaveData.sound_complete.complete.obs, genWideInt.sound_complete.complete.obs]
     have hlen := length_encode d
     have hedits := hd.2.2.1
+    have hentities := hd.2.2.2.2.2.1
+    have hpopulated := hd.2.2.2.2.2.2.2.1
     exact ⟨d, hd, j, ⟨Nat.zero_le _, by omega⟩, w, hw, by rw [Nat.mod_eq_of_lt hj]⟩
 
 theorem genMutatedSave.terminates : IsAlmostSurelyTerminating genMutatedSave := by

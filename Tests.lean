@@ -259,6 +259,125 @@ def main : IO UInt32 := do
       && State.reachVector ⟨-655360, 0, 65536⟩ == ⟨-327680, 0, 32768⟩
       && State.reachVector ahead == ahead) && ok
 
+  -- The fox, in the flat world. It stands on the grass at (4.5, 9, 4.5), about to walk east.
+  let eastward : Entity :=
+    { pos := ⟨block 4 + 32768, block 9, block 4 + 32768⟩, onGround := true, heading := 2
+      walking := true, timer := 400 }
+  let trot (world : World) (n : Nat) : Entity × Bool × Bool :=
+    (List.range n).foldl (init := (eastward, true, false)) fun (e, fine, climbed) _ =>
+      let e := (e.step world.solid ⟨0⟩).1
+      (e, fine && !Entity.shape.blocked world.solid e.pos,
+        climbed || (e.onGround && e.pos.y == block 10))
+  let open_ := trot flatWorld 100
+  ok := (← check "a fox walks the way it faces, at walking speed, and stays on the ground" <|
+    open_.2.1 && open_.1.pos.x > block 7 && open_.1.pos.z == eastward.pos.z
+      && open_.1.pos.y == block 9 && open_.1.vel.x == Entity.walkSpeed) && ok
+
+  let stepped := flatWorld.set ⟨6, 9, 4⟩ .stone
+  let hopped := trot stepped 100
+  ok := (← check "a fox hops onto a block in its way and carries on over it" <|
+    hopped.2.1 && hopped.2.2 && hopped.1.walking && hopped.1.pos.x > block 7) && ok
+
+  let walled := (stepped.set ⟨6, 10, 4⟩ .stone)
+  let stopped := trot walled 100
+  let gap := block 6 - (stopped.1.pos.x + Entity.halfWidth)
+  ok := (← check "a fox stops short of a wall it cannot climb, and never jumps at it" <|
+    stopped.2.1 && !stopped.2.2 && !stopped.1.walking && stopped.1.pos.y == block 9
+      && 0 ≤ gap && gap ≤ Entity.lookAhead) && ok
+
+  let sitting : Entity :=
+    { pos := ⟨block 6 + 32768, block 9, block 4 + 32768⟩, onGround := true, timer := 1000 }
+  let atFox : Vec3 := ⟨157286, -127402, 0⟩
+  let kept : State := { standing with entities := [sitting] }
+  ok := (← check "placing where the fox stands is refused, and only because the fox is there" <|
+    standing.edit { look := atFox, action := some .place } == some (⟨6, 9, 4⟩, .cobble)
+      && (kept.edit { look := atFox, action := some .place }).isNone
+      && (kept.step { look := atFox, action := some .place }).world.get ⟨6, 9, 4⟩ == .air) && ok
+
+  -- Foxes in the generated world: a function of the seed, one column of chunks in 32.
+  let columns : List (Int × Int) :=
+    (range (-32) 31).flatMap fun cx => (range (-32) 31).map fun cz => (cx, cz)
+  let generated := columns.flatMap fun (cx, cz) =>
+    (Terrain.creatures seed cx cz).map fun e => (cx, cz, e)
+  ok := (← check s!"about one column of chunks in 32 starts with a fox ({generated.length} of \
+      {columns.length})"
+    (90 ≤ generated.length && generated.length ≤ 170)) && ok
+
+  ok := (← check "every generated fox stands on the ground in its own column, clear of blocks" <|
+    generated.all fun (cx, cz, e) =>
+      e.chunk.x == cx && e.chunk.z == cz && e.onGround && e.pos.y ≥ 65536
+        && !Entity.shape.blocked gsolid e.pos && Entity.shape.blocked gsolid (e.pos.add .y (-1)))
+    && ok
+
+  ok := (← check "another seed puts its foxes elsewhere" <|
+    (columns.filter fun (cx, cz) => !(Terrain.creatures seed cx cz).isEmpty)
+      != (columns.filter fun (cx, cz) => !(Terrain.creatures (seed + 1) cx cz).isEmpty)) && ok
+
+  -- A new game has made the foxes of the columns loaded around the player, and no others.
+  let newGame := Terrain.initial seed
+  let near := (State.loadedColumns newGame.centre).flatMap fun (cx, cz) =>
+    Terrain.creatures seed cx cz
+  ok := (← check s!"a new game has the foxes of its {newGame.populated.size} loaded columns \
+      ({newGame.entities.length} of them)"
+    (newGame.populated.size == 169 && newGame.entities == near && newGame.entities.length > 0))
+    && ok
+
+  -- Left alone for five minutes, the foxes wander. They are checked every tick.
+  let wander := (List.range 18000).foldl (init := (newGame, true, 0, 0, 0))
+    fun (s, fine, walked, hops, turns) _ =>
+      let next := s.step {}
+      let fine := fine && next.entities.length == s.entities.length && next.entities.all fun e =>
+        !Entity.shape.blocked next.world.solid e.pos && e.pos.y ≥ 65536
+          && e.onGround == Entity.shape.blocked next.world.solid (e.pos.add .y (-1))
+          && e.vel.x.natAbs ≤ 65536 && e.vel.y.natAbs ≤ 65536 && e.vel.z.natAbs ≤ 65536
+      let pairs := next.entities.zip s.entities
+      let moved := (pairs.map fun (a, b) => (a.pos.x - b.pos.x).natAbs + (a.pos.z - b.pos.z).natAbs).sum
+      let hopped := (pairs.countP fun (a, b) => b.onGround && a.vel.y > 0)
+      let turned := (pairs.countP fun (a, b) => a.heading != b.heading)
+      (next, fine, walked + moved, hops + hopped, turns + turned)
+  ok := (← check s!"18000 ticks of wandering never put a fox in a block or through the floor \
+      (they walked {wander.2.2.1 / 65536} blocks, hopped {wander.2.2.2.1} times and turned \
+      {wander.2.2.2.2} times)"
+    (wander.2.1 && wander.2.2.1 > 100 * 65536 && wander.2.2.2.1 > 0 && wander.2.2.2.2 > 20)) && ok
+
+  -- Loading, in a flat world given one fox, in the column of chunks at the origin.
+  let oneFox (cx cz : Int) : List Entity :=
+    if cx == 0 && cz == 0 then [sitting] else []
+  let zoo := Terrain.flatWorld oneFox
+  let visit (creatures : Int → Int → List Entity) : Option State :=
+    (Session.start? (Terrain.flatWorld creatures) Terrain.flatWorld_floor dropped).map (·.state)
+  ok := (← check "a test world has the creatures it is given, and none if it is given none" <|
+    (visit fun _ _ => []).map (·.entities) == some []
+      && (visit oneFox).map (·.entities) == some [sitting]
+      && (visit fun _ _ => [sitting]).map (·.entities.length) == some 169) && ok
+
+  ok := (← check "a creature whose place is not sound is not made" <|
+    (visit fun cx cz => (oneFox cx cz).map fun e => { e with pos := e.pos.add .y (-block 2) }).map
+      (fun s => (s.entities, s.populated.size)) == some ([], 169)) && ok
+
+  -- Fly 200 blocks east, wait, and fly back. The fox is left 12 chunks behind.
+  let fly (s : State) (wish : Int) : State :=
+    s.run (List.replicate 200 { move := { wishX := wish } })
+  let home : State := { world := zoo, player := { dropped with flying := true }
+                        entities := [sitting], populated := .ofList [(0, 0)] }
+  let away := fly home 65536
+  let waited := away.run (List.replicate 600 {})
+  let back := (fly waited (-65536)).run (List.replicate 600 {})
+  ok := (← check s!"a fox in an unloaded chunk does not move, and wakes when the player comes back \
+      (the player went {(away.player.pos.x - home.player.pos.x) / 65536} blocks)" <|
+    !State.loaded away.centre sitting.chunk && waited.entities == away.entities
+      && waited.rng == away.rng && State.loaded back.centre sitting.chunk
+      && back.entities != away.entities) && ok
+
+  ok := (← check "its column is populated once: there is still one fox after the trip" <|
+    back.entities.length == 1 && back.populated.size > 169
+      && (home.run (List.replicate 600 {})).entities != home.entities) && ok
+
+  let idle (s : State) : State := s.run (List.replicate 600 {})
+  ok := (← check "another random seed in the same world gives another wander" <|
+    (idle newGame).entities != (idle { newGame with rng := .ofSeed (seed + 1) }).entities
+      && (idle newGame).rng != newGame.rng) && ok
+
   -- Random play in the generated world, checked every tick.
   let kinds : List Block :=
     [.bedrock, .stone, .dirt, .grass, .sand, .log, .leaves, .planks, .cobble]
@@ -276,6 +395,9 @@ def main : IO UInt32 := do
       let feet := next.player.pos.blockPos
       let fine := fine && !Player.blocked next.world.solid next.player.pos
         && next.player.pos.y ≥ 65536 && next.world.get ⟨feet.x, 0, feet.z⟩ == .bedrock
+        && next.entities.length ≥ s.entities.length && next.entities.all (fun e =>
+            !Entity.shape.blocked next.world.solid e.pos && e.pos.y ≥ 65536
+              && e.onGround == Entity.shape.blocked next.world.solid (e.pos.add .y (-1)))
         && (match edit with
             | some (q, b) =>
               -- The edit took effect, and every kind of block is conserved across it.
@@ -305,6 +427,20 @@ def main : IO UInt32 := do
         { pos := ⟨block 4 + 32768, -block 3, block 4 + 32768⟩ }).isNone
       && (fresh.edit? ⟨4, 0, 4⟩ .air).isNone && (fresh.edit? ⟨4, 9, 4⟩ .stone).isNone
       && (fresh.edit? ⟨6, 9, 4⟩ .stone).isSome) && ok
+  let start (entities : List Entity) : Option Session :=
+    Session.resume? Terrain.flatWorld Terrain.flatWorld_floor dropped (entities := entities)
+  ok := (← check "no session resumes for a fox inside the ground, in the air unawares or too fast" <|
+    (start [sitting]).isSome
+      && (start [{ sitting with pos := sitting.pos.add .y (-block 2) }]).isNone
+      && (start [{ sitting with pos := sitting.pos.add .y (block 2) }]).isNone
+      && (start [{ sitting with vel := ⟨70000, 0, 0⟩ }]).isNone
+      && (start [sitting, { sitting with pos := ⟨0, -block 3, 0⟩ }]).isNone) && ok
+  ok := (← check "a scene edit may not bury the fox, and one beneath it tells it so" <|
+    match start [sitting] with
+    | some s =>
+      (s.edit? ⟨6, 9, 4⟩ .stone).isNone
+        && ((s.edit? ⟨6, 8, 4⟩ .air).map fun s => s.state.entities.map (·.onGround)) == some [false]
+    | none => false) && ok
   let digs (cmds : List Command) : Nat := cmds.countP (·.dig)
   let between := fresh.play [quiet, { quiet with dig := true }, quiet, quiet, quiet, quiet]
   ok := (← check "a dig pressed on a frame with no tick is run by the next tick, once" <|
@@ -379,15 +515,36 @@ def main : IO UInt32 := do
             loaded.state.world.get q == played.state.world.get q)
     | none => false) && ok
 
+  ok := (← check "and the same foxes, which wander on from there just as they would have" <|
+    match data.restore? with
+    | some loaded =>
+      data.entities.length > 0 && loaded.state.entities == played.state.entities
+        && loaded.state.rng == played.state.rng
+        && data.populated.length == played.state.populated.size
+        && data.populated.all loaded.state.populated.contains
+        && (idle loaded.state).entities == (idle played.state).entities
+        && (idle loaded.state).entities != played.state.entities
+    | none => false) && ok
+
   let ints := data.encode
   ok := (← check "damaged saves are refused" <|
     (SaveData.decode? (ints.set 0 1)).isNone                 -- wrong magic
       && (SaveData.decode? (ints.take 20)).isNone            -- cut short
       && (SaveData.decode? (ints ++ [0])).isNone             -- something left over
-      && (SaveData.decode? (ints.set 12 2 |>.set 13 65)).isNone   -- a stack of 65
-      && (SaveData.decode? (ints.set 12 2 |>.set 13 0)).isNone    -- an empty stack
-      && (SaveData.decode? (ints.set 12 77 |>.set 13 1)).isNone   -- no such block
-      && (SaveData.decode? (ints.set 11 9)).isNone) && ok    -- no such slot
+      && (SaveData.decode? (ints.set 1 1)).isNone            -- a format from before the fox
+      && (SaveData.decode? (ints.set 3 (-1))).isNone         -- no such random number generator
+      && (SaveData.decode? (ints.set 13 2 |>.set 14 65)).isNone   -- a stack of 65
+      && (SaveData.decode? (ints.set 13 2 |>.set 14 0)).isNone    -- an empty stack
+      && (SaveData.decode? (ints.set 13 77 |>.set 14 1)).isNone   -- no such block
+      && (SaveData.decode? (ints.set 12 9)).isNone           -- no such slot
+      -- The creatures follow the nine slots, ten integers each from index 32.
+      && ints[31]? == some (data.entities.length : Int) && data.entities.length > 0
+      && (SaveData.decode? (ints.set 39 8)).isNone           -- no such heading
+      && (SaveData.decode? (ints.set 40 2)).isNone           -- neither walking nor resting
+      && (SaveData.decode? (ints.set 41 (-1))).isNone        -- a timer below zero
+      -- Then the populated columns, two integers each.
+      && ints[32 + 10 * data.entities.length]? == some (data.populated.length : Int)
+      && (SaveData.decode? (ints.set (32 + 10 * data.entities.length) (-1))).isNone) && ok
 
   ok := (← check "saves describing an unsound game are refused" <|
     -- Appended, because a later edit to a cell wins and the player may stand in a cell they dug.
@@ -400,5 +557,14 @@ def main : IO UInt32 := do
       && ({ data with player := { data.player with vel := ⟨0, 70000, 0⟩ } }).restore?.isNone
       && ({ data with player := { data.player with onGround := !data.player.onGround } }).restore?.isNone)
     && ok
+
+  let foxes (f : Entity → Entity) : SaveData := { data with entities := data.entities.map f }
+  ok := (← check "and so are saves describing an unsound fox" <|
+    (foxes id).restore?.isSome
+      && (foxes fun e => { e with pos := ⟨e.pos.x, -70000, e.pos.z⟩ }).restore?.isNone
+      && (foxes fun e => { e with vel := ⟨0, 70000, 0⟩ }).restore?.isNone
+      && (foxes fun e => { e with onGround := !e.onGround }).restore?.isNone
+      && ({ data with edits := data.edits ++ data.entities.map fun (e : Entity) =>
+            (e.pos.blockPos, Block.stone) }).restore?.isNone) && ok
 
   return if ok then 0 else 1

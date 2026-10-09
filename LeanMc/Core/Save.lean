@@ -3,15 +3,17 @@ import LeanMc.Core.Start
 /-!
 # Saving and loading
 
-A saved game is plain data: the world's seed, the player, what they carry, and
-the list of blocks that differ from the generated terrain. It is written as a
-list of integers.
+A saved game is plain data: the world's seed, the random number generator, the
+player, what they carry, the creatures that have been made and the columns of
+chunks they were made for, and the list of blocks that differ from the
+generated terrain. It is written as a list of integers.
 
 Loading trusts nothing. The integers must parse, and the game they describe
 must pass the same checks as any other way of starting a session: an intact
-floor; a player who is clear of blocks, above the floor, within the speed limit
-and right about whether they stand on something; and neither air nor bedrock
-being carried. A file that fails is refused; it cannot produce an unsound game.
+floor; a player and creatures who are clear of blocks, above the floor, within
+the speed limit and right about whether they stand on something; and neither
+air nor bedrock being carried. A file that fails is refused; it cannot produce
+an unsound game.
 
 A session knows the seed its terrain came from, so saving takes no seed from
 outside: the file cannot name a world other than the one being played.
@@ -39,9 +41,14 @@ end Block
 /-- Everything needed to rebuild a game. -/
 structure SaveData where
   seed : UInt64
+  /-- Where the next random number comes from. -/
+  rng : Rng
   player : Player
   inventory : Inventory
   selected : Fin 9
+  entities : List Entity
+  /-- The columns of chunks whose creatures have been made. -/
+  populated : List (Int × Int)
   /--
   Every cell that has ever been written, with what it holds now. A cell that
   was dug and filled in again is listed although it matches the terrain.
@@ -53,7 +60,7 @@ namespace SaveData
 
 /-- Marks the start of a saved game, and its format version. -/
 def magic : Int := 7707
-def version : Int := 1
+def version : Int := 3
 
 def encodeBool (b : Bool) : Int :=
   if b then 1 else 0
@@ -81,6 +88,37 @@ def decodeSlots? : Nat → List Int → Option (List (Option Stack) × List Int)
       (decodeSlots? n rest).map fun (slots, rest) => (slot :: slots, rest)
   | _ + 1, _ => none
 
+/-- A creature as ten integers: where it is, how it is moving and what it is doing. -/
+def encodeEntity (e : Entity) : List Int :=
+  [e.pos.x, e.pos.y, e.pos.z, e.vel.x, e.vel.y, e.vel.z, encodeBool e.onGround,
+   (e.heading.val : Int), encodeBool e.walking, (e.timer : Int)]
+
+def decodeEntity? (px py pz vx vy vz ground heading walking timer : Int) : Option Entity :=
+  if h : 0 ≤ heading ∧ heading < 8 ∧ 0 ≤ timer then
+    (decodeBool? ground).bind fun onGround =>
+    (decodeBool? walking).map fun walking =>
+      { pos := ⟨px, py, pz⟩, vel := ⟨vx, vy, vz⟩, onGround
+        heading := ⟨heading.toNat, by omega⟩, walking, timer := timer.toNat }
+  else none
+
+/-- Read `n` creatures from the front of a list of integers, returning the rest. -/
+def decodeEntities? : Nat → List Int → Option (List Entity × List Int)
+  | 0, rest => some ([], rest)
+  | n + 1, px :: py :: pz :: vx :: vy :: vz :: ground :: heading :: walking :: timer :: rest =>
+    (decodeEntity? px py pz vx vy vz ground heading walking timer).bind fun entity =>
+      (decodeEntities? n rest).map fun (entities, rest) => (entity :: entities, rest)
+  | _ + 1, _ => none
+
+def encodeColumn (c : Int × Int) : List Int :=
+  [c.1, c.2]
+
+/-- Read `n` columns of chunks from the front of a list of integers, returning the rest. -/
+def decodeColumns? : Nat → List Int → Option (List (Int × Int) × List Int)
+  | 0, rest => some ([], rest)
+  | n + 1, x :: z :: rest =>
+    (decodeColumns? n rest).map fun (columns, rest) => ((x, z) :: columns, rest)
+  | _ + 1, _ => none
+
 def encodeEdit (e : BlockPos × Block) : List Int :=
   [e.1.x, e.1.y, e.1.z, (e.2.toNat : Int)]
 
@@ -97,17 +135,21 @@ def decodeEdits? : Nat → List Int → Option (List (BlockPos × Block))
 
 /-- A saved game as a list of integers. -/
 def encode (d : SaveData) : List Int :=
-  [magic, version, (d.seed.toNat : Int),
+  [magic, version, (d.seed.toNat : Int), (d.rng.state.toNat : Int),
    d.player.pos.x, d.player.pos.y, d.player.pos.z,
    d.player.vel.x, d.player.vel.y, d.player.vel.z,
    encodeBool d.player.onGround, encodeBool d.player.flying, (d.selected.val : Int)]
-    ++ d.inventory.slots.toList.flatMap encodeSlot
-    ++ (d.edits.length : Int) :: d.edits.flatMap encodeEdit
+    ++ (d.inventory.slots.toList.flatMap encodeSlot
+    ++ (d.entities.length : Int) :: (d.entities.flatMap encodeEntity
+    ++ (d.populated.length : Int) :: (d.populated.flatMap encodeColumn
+    ++ (d.edits.length : Int) :: d.edits.flatMap encodeEdit)))
 
 /-- Read a saved game back. Anything malformed gives `none`. -/
 def decode? : List Int → Option SaveData
-  | m :: v :: seed :: px :: py :: pz :: vx :: vy :: vz :: ground :: flying :: selected :: rest =>
-    if m = magic ∧ v = version ∧ 0 ≤ seed ∧ seed < 18446744073709551616 then
+  | m :: v :: seed :: rng :: px :: py :: pz :: vx :: vy :: vz :: ground :: flying :: selected
+      :: rest =>
+    if m = magic ∧ v = version ∧ (0 ≤ seed ∧ seed < 18446744073709551616)
+        ∧ 0 ≤ rng ∧ rng < 18446744073709551616 then
       if hs : 0 ≤ selected ∧ selected < 9 then
         (decodeBool? ground).bind fun onGround =>
         (decodeBool? flying).bind fun flying =>
@@ -116,12 +158,28 @@ def decode? : List Int → Option SaveData
             match rest with
             | count :: rest =>
               if 0 ≤ count then
-                (decodeEdits? count.toNat rest).map fun edits =>
-                  { seed := seed.toNat.toUInt64
-                    player := { pos := ⟨px, py, pz⟩, vel := ⟨vx, vy, vz⟩, onGround, flying }
-                    inventory := ⟨⟨slots.toArray, by simp [hl]⟩⟩
-                    selected := ⟨selected.toNat, by omega⟩
-                    edits }
+                (decodeEntities? count.toNat rest).bind fun (entities, rest) =>
+                  match rest with
+                  | count :: rest =>
+                    if 0 ≤ count then
+                      (decodeColumns? count.toNat rest).bind fun (populated, rest) =>
+                        match rest with
+                        | count :: rest =>
+                          if 0 ≤ count then
+                            (decodeEdits? count.toNat rest).map fun edits =>
+                              { seed := seed.toNat.toUInt64
+                                rng := ⟨rng.toNat.toUInt64⟩
+                                player :=
+                                  { pos := ⟨px, py, pz⟩, vel := ⟨vx, vy, vz⟩, onGround, flying }
+                                inventory := ⟨⟨slots.toArray, by simp [hl]⟩⟩
+                                selected := ⟨selected.toNat, by omega⟩
+                                entities
+                                populated
+                                edits }
+                          else none
+                        | [] => none
+                    else none
+                  | [] => none
               else none
             | [] => none
           else none
@@ -144,7 +202,7 @@ session remembers the seed, so it can be saved again.
 -/
 def restore? (d : SaveData) : Option Session :=
   if hfloor : d.edits.all (fun e => e.1.y != 0 || e.2 == .bedrock) then
-    Session.start? ((Terrain.world d.seed).setMany d.edits)
+    Session.resume? ((Terrain.world d.seed).setMany d.edits)
       (fun x z => by
         have hbase := Terrain.world_floor_get d.seed
         generalize Terrain.world d.seed = w at hbase
@@ -162,11 +220,10 @@ def restore? (d : SaveData) : Option Session :=
           split
           · next heq => exact hall e List.mem_cons_self (by rw [← heq])
           · exact hbase x z)
-      d.player d.inventory d.selected (some d.seed)
+      d.player d.inventory d.selected d.entities (.ofList d.populated) d.rng (some d.seed)
       (fun sd h => by
         cases h
-        rw [World.terrain_setMany]
-        rfl)
+        exact ⟨by rw [World.terrain_setMany]; rfl, by rw [World.creatures_setMany]; rfl⟩)
   else none
 
 end SaveData
@@ -180,9 +237,12 @@ seed is the session's own, which is proved to be its terrain's.
 def snapshot (s : Session) : Option SaveData :=
   s.seed.map fun seed =>
     { seed
+      rng := s.state.rng
       player := s.state.player
       inventory := s.state.inventory
       selected := s.state.selected
+      entities := s.state.entities
+      populated := s.state.populated.toList
       edits := s.state.world.edits.toList }
 
 end Session

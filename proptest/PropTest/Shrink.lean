@@ -116,6 +116,14 @@ def shrinkPlayer (p : Player) : List Player :=
     ++ (if p.onGround then [{ p with onGround := false }] else [])
     ++ (if p.flying then [{ p with flying := false }] else [])
 
+def shrinkEntity (e : Entity) : List Entity :=
+  (shrinkVec3 e.pos).map (fun pos => { e with pos })
+    ++ (shrinkVec3 e.vel).map (fun vel => { e with vel })
+    ++ (if e.onGround then [{ e with onGround := false }] else [])
+    ++ (if e.walking then [{ e with walking := false }] else [])
+    ++ (shrinkNat e.timer).map (fun timer => { e with timer })
+    ++ (if e.heading = 0 then [] else [{ e with heading := 0 }])
+
 def shrinkEdit (e : BlockPos × Block) : List (BlockPos × Block) :=
   (shrinkInt e.1.x).map (fun x => ({ e.1 with x }, e.2))
     ++ (shrinkInt e.1.y).map (fun y => ({ e.1 with y }, e.2))
@@ -146,6 +154,10 @@ def shrinkSaveData (d : SaveData) : List SaveData :=
     ++ (shrinkPlayer d.player).map (fun player => { d with player })
     ++ (shrinkNat d.seed.toNat).map (fun n => { d with seed := n.toUInt64 })
     ++ (if d.selected = 0 then [] else [{ d with selected := 0 }])
+    ++ (shrinkList shrinkEntity d.entities).map (fun entities => { d with entities })
+    ++ (shrinkNat d.rng.state.toNat).map (fun n => { d with rng := ⟨n.toUInt64⟩ })
+    ++ (shrinkList (shrinkPair shrinkInt shrinkInt) d.populated).map
+      (fun populated => { d with populated })
 
 /-! ## Running a property -/
 

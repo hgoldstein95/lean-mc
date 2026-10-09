@@ -150,6 +150,14 @@ opaque debugReset : IO Unit
 @[extern "lmc_draw_box_wires"]
 opaque drawBoxWires (x y z sx sy sz : Float) (rgba : UInt32) : IO Unit
 
+/--
+Draw a solid box in 3D mode, as part of a creature. The box has minimum corner
+`(x, y, z)` and size `(sx, sy, sz)` in a frame turned by `turn` degrees about
+the vertical axis and then moved to `(px, py, pz)`.
+-/
+@[extern "lmc_draw_box"]
+opaque drawBox (px py pz turn x y z sx sy sz : Float) (rgba : UInt32) : IO Unit
+
 /-- Replace the block texture atlas with a `width × height` RGBA8 image. -/
 @[extern "lmc_set_atlas"]
 opaque setAtlas (width height : UInt32) (rgba : @& ByteArray) : IO Unit

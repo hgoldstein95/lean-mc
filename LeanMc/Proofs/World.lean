@@ -15,8 +15,8 @@ namespace LeanMc
 
 namespace World
 
-@[simp] theorem get_new (terrain : BlockPos → Block) (p : BlockPos) :
-    (new terrain).get p = terrain p := by
+@[simp] theorem get_new (terrain : BlockPos → Block) (creatures : Int → Int → List Entity)
+    (p : BlockPos) : (new terrain creatures).get p = terrain p := by
   simp [new, get]
 
 theorem get_set_self (w : World) (p : BlockPos) (b : Block) : (w.set p b).get p = b := by
@@ -43,6 +43,20 @@ theorem get_set (w : World) (p q : BlockPos) (b : Block) :
   | nil => rfl
   | cons e es ih => exact ih (w.set e.1 e.2)
 
+/-- Writing a block does not change which creatures the world starts with. -/
+@[simp] theorem creatures_set (w : World) (p : BlockPos) (b : Block) :
+    (w.set p b).creatures = w.creatures := rfl
+
+@[simp] theorem creatures_setMany (w : World) (edits : List (BlockPos × Block)) :
+    (w.setMany edits).creatures = w.creatures := by
+  induction edits generalizing w with
+  | nil => rfl
+  | cons e es ih => exact ih (w.set e.1 e.2)
+
+/-- Choosing a world's creatures does not change its blocks. -/
+@[simp] theorem get_withCreatures (w : World) (creatures : Int → Int → List Entity)
+    (p : BlockPos) : (w.withCreatures creatures).get p = w.get p := rfl
+
 /-- A later write to the same position wins. -/
 theorem get_set_set (w : World) (p q : BlockPos) (a b : Block) :
     ((w.set p a).set p b).get q = (w.set p b).get q := by
@@ -66,9 +80,9 @@ theorem get_setMany_of_not_mem (w : World) (edits : List (BlockPos × Block)) (p
     rw [this, get_set_of_ne _ _ (Ne.symm (h e List.mem_cons_self))]
 
 /-- However the world has been edited, a position nobody wrote still holds its terrain block. -/
-theorem get_setMany_new (terrain : BlockPos → Block) (edits : List (BlockPos × Block))
-    (p : BlockPos) (h : ∀ e ∈ edits, e.1 ≠ p) :
-    ((new terrain).setMany edits).get p = terrain p := by
+theorem get_setMany_new (terrain : BlockPos → Block) (creatures : Int → Int → List Entity)
+    (edits : List (BlockPos × Block)) (p : BlockPos) (h : ∀ e ∈ edits, e.1 ≠ p) :
+    ((new terrain creatures).setMany edits).get p = terrain p := by
   rw [get_setMany_of_not_mem _ _ _ h, get_new]
 
 /-- A materialised chunk holds exactly the world's blocks. -/

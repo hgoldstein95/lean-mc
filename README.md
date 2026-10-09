@@ -6,9 +6,12 @@ with its game logic proved correct.
 ![Walking and jumping across a beach, digging and placing sand, then flying over the forest](docs/demo.gif)
 
 Walk around generated terrain, dig blocks into your hotbar, place them again,
-fly, and save and load. The rules of the game are pure Lean functions with
-theorems about them; drawing and input go through a thin C shim over
-[raylib](https://www.raylib.com).
+fly, and save and load. Foxes live in the world: about one column of chunks in
+32 starts with one, and they wander about, hopping up where they have to. The
+rules of the game are pure Lean functions with theorems about them; drawing and
+input go through a thin C shim over [raylib](https://www.raylib.com).
+
+![A fox standing on a grassy hillside, looking at the player](docs/fox.png)
 
 ## Running
 
@@ -21,7 +24,8 @@ lake exe leanmc
 ```
 
 Options: `--seed N` picks the world, `--at X Y Z` picks where you start,
-`--flat` gives a flat test world, and `--load FILE` starts from a saved game.
+`--flat` gives a flat test world with no foxes, and `--load FILE` starts from a
+saved game. Saved games in an older format are not loaded.
 
 ## Controls
 
@@ -44,22 +48,37 @@ Options: `--seed N` picks the world, `--at X Y Z` picks where you start,
 The game is split into three parts:
 
 - `LeanMc/Core` is the game itself: world storage, terrain, meshing, physics,
-  targeting, inventory, pacing, render planning and saving.
+  the player and the foxes, loading, targeting, inventory, pacing, render
+  planning and saving.
 - `LeanMc/Proofs` has the theorems about the core.
 - `LeanMc/Shell` and `ffi/shim.c` are the unverified shell: the frame loop, and
   the window, GPU objects and raw input.
 
 Some of the headline results, for any seed and any sequence of inputs:
 
-- **The game never goes wrong.** The player is never inside a solid block, the
-  bedrock floor is never broken, and the player never falls through it.
+- **The game never goes wrong.** Neither the player nor any fox is ever inside
+  a solid block, the bedrock floor is never broken, and none of them ever falls
+  through it. The physics is proved once, for a body of any shape.
+- **Loading belongs to the game, not the renderer.** The chunks near the player
+  are loaded, and which those are is a function of the game state. A fox in an
+  unloaded chunk does not move, and no edit can reach it. Every loaded column
+  of chunks has had its foxes made, and a column's foxes are made once. The
+  renderer draws the region the game says is loaded.
+- **Foxes are part of the terrain.** Which columns have one is a function of
+  the seed, so the world has the same foxes whatever order it is explored in.
+  A world built by hand has the creatures it is given, and none otherwise.
+- **Randomness is a value.** A fox's wandering is random, but the random number
+  generator is part of the game state, so a tick is still a function of the
+  state and the input. The generator is opaque to the proofs: no theorem
+  depends on which numbers it gives.
 - **What is drawn is what is there.** A face is in a chunk's mesh exactly when
   its block is visible and the block beside it is not opaque, and no face is
   emitted twice.
 - **Blocks are conserved.** Digging and placing never duplicate a block or make
   one vanish, and a tick changes at most one block.
 - **Presses are not lost or repeated**, however frames and ticks line up.
-- **Save and load is the identity.**
+- **Save and load is the identity**, for the foxes, the populated columns and
+  the random number generator as much as for the player and the blocks.
 
 `LeanMc/Proofs/Audit.lean` checks that these rest only on Lean's three standard
 axioms, so there is no `sorry` and no `native_decide`. Building the project is

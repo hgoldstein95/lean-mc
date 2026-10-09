@@ -7,7 +7,7 @@ done for the harness.
 
 ## What is proved
 
-For each of the 39 generators in `PropTest/Gen.lean`, in `PropTestProofs/`:
+For each of the 42 generators in `PropTest/Gen.lean`, in `PropTestProofs/`:
 
 | Law | Meaning | Name |
 |---|---|---|
@@ -21,11 +21,11 @@ proof is one `walk` over the generator's definition followed by arithmetic.
 
 | File | Generators |
 |---|---|
-| `Basic.lean` | `chance`, `genSpeed`, `genInput`, `genLook`, `genBlock`, `genAnyBlock`, `genSelect`, `genSlot9`, `genAction`, `genElapsed`, `genWideInt` |
+| `Basic.lean` | `chance`, `genSpeed`, `genInput`, `genLook`, `genBlock`, `genAnyBlock`, `genSelect`, `genSlot9`, `genHeading`, `genAction`, `genElapsed`, `genWideInt` |
 | `Game.lean` | `genCommand`, `genCommands`, `genSeededCommands`, `genFrame`, `genFrames`, `genRay` |
 | `Render.lean` | `genChunk`, `genCentre`, `genEditY`, `genEditCoord`, `genEditPos`, `genRenderOp`, `genRenderOps` |
 | `Gpu.lean` | `genByte`, `genBytes`, `genMesh`, `genSlot`, `genGpuCmd`, `genGpuCmds`, `genDecodeBytes` |
-| `Save.lean` | `genStackSlot`, `genInventory`, `genWideVec`, `genSeed`, `genEdit`, `genPlayer`, `genSaveData`, `genMutatedSave` |
+| `Save.lean` | `genStackSlot`, `genInventory`, `genWideVec`, `genSeed`, `genEdit`, `genPlayer`, `genEntity`, `genColumn`, `genSaveData`, `genMutatedSave` |
 
 So that each theorem is about the term that runs, every generator a property
 uses is a named definition, with none bound locally inside another. The
@@ -49,6 +49,8 @@ predicate that has the case.
   misuse the shim's model calls a fault.
 - `genSaveData_covers_unloadable`, `_loadable`: a save that is refused and a
   save that loads.
+- `genSaveData_covers_fox`, `_unsound_fox`: a save with a fox that loads, and
+  a save that is refused for its fox alone.
 
 `Audit.lean` checks that every theorem here rests on Lean's three standard
 axioms only, and fails if a proof file in the directory is not imported.
@@ -104,12 +106,12 @@ def Decreasing (shrink : α → List α) (size : α → Nat) : Prop :=
 ```
 
 The file gives a measure for each shrinker (`commandSize`, `frameSize`,
-`renderOpSize`, `meshSize`, `gpuCmdSize`, `inventorySize`, `saveSize`, and
-`listSize` for lists) and proves the law for each: `shrinkNat`, `shrinkInt`,
-`shrinkElapsed`, `shrinkVec3`, `shrinkSelect`, `shrinkBlock`, `shrinkInput`,
-`shrinkCommand`, `shrinkFrame`, `shrinkChunk`, `shrinkRenderOp`, `shrinkMesh`,
-`shrinkGpuCmd`, `shrinkInventory`, `shrinkPlayer`, `shrinkEdit`,
-`shrinkSaveData`, and the combinators `shrinkList` and `shrinkPair` for any
+`renderOpSize`, `meshSize`, `gpuCmdSize`, `inventorySize`, `entitySize`,
+`columnSize`, `saveSize`, and `listSize` for lists) and proves the law for each: `shrinkNat`,
+`shrinkInt`, `shrinkElapsed`, `shrinkVec3`, `shrinkSelect`, `shrinkBlock`,
+`shrinkInput`, `shrinkCommand`, `shrinkFrame`, `shrinkChunk`, `shrinkRenderOp`,
+`shrinkMesh`, `shrinkGpuCmd`, `shrinkInventory`, `shrinkPlayer`,
+`shrinkEntity`, `shrinkEdit`, `shrinkSaveData`, and the combinators `shrinkList` and `shrinkPair` for any
 decreasing shrinker of their elements. Its last section instantiates these at
 exactly the shrinkers `Props.lean` and `Native.lean` hand to `minimise`.
 

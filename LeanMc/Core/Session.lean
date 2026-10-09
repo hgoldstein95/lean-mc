@@ -1,5 +1,6 @@
 import LeanMc.Core.Game
 import LeanMc.Core.Terrain
+import LeanMc.Core.Generated
 import LeanMc.Proofs.Game
 
 /-!
@@ -102,8 +103,11 @@ structure Session where
   debt : Nat := 0
   /-- The seed the world's terrain was generated from, if it was generated from one. -/
   seed : Option UInt64 := none
-  /-- The seed is the truth about the terrain, so a saved game cannot record the wrong one. -/
-  seeded : ∀ sd, seed = some sd → state.world.terrain = Terrain.generate sd := by simp
+  /--
+  The seed is the truth about the terrain and its creatures, so a saved game
+  cannot record the wrong one.
+  -/
+  seeded : ∀ sd, seed = some sd → state.world.FromSeed sd := by simp
 
 /-- What the shell needs to know about a batch of ticks besides the resulting state. -/
 structure RunLog where
@@ -112,6 +116,8 @@ structure RunLog where
   edits : Array (BlockPos × Block) := #[]
   /-- Where the player stood before the last tick, if any tick ran. -/
   before : Option Vec3 := none
+  /-- The creatures as they were before the last tick, if any tick ran. -/
+  entitiesBefore : Option (List Entity) := none
 
 namespace State
 
@@ -123,6 +129,7 @@ def logStep (log : RunLog) (cmd : Command) : RunLog where
     | some e => log.edits.push e
     | none => log.edits
   before := some log.state.player.pos
+  entitiesBefore := some log.state.entities
 
 /-- `State.run`, also reporting the block changes made along the way. -/
 def runLog (s : State) (cmds : List Command) : RunLog :=
@@ -189,7 +196,9 @@ def frame (s : Session) (f : Frame) : Session where
   pending := s.pendingAfter f
   debt := s.debtAfter f
   seed := s.seed
-  seeded sd h := (State.run_terrain ..).trans (s.seeded sd h)
+  seeded sd h :=
+    ⟨(State.run_terrain ..).trans (s.seeded sd h).1,
+      (State.run_creatures ..).trans (s.seeded sd h).2⟩
 
 /-- `frame`, also reporting what the shell must mirror: block changes and the last move. -/
 def frameLog (s : Session) (f : Frame) : Session × RunLog :=
@@ -200,8 +209,10 @@ def frameLog (s : Session) (f : Frame) : Session × RunLog :=
      debt := s.debtAfter f
      seed := s.seed
      seeded := fun sd h =>
-      (congrArg (·.world.terrain) (State.runLog_state s.state (s.commands f))).trans
-        ((State.run_terrain ..).trans (s.seeded sd h)) }, log)
+      State.runLog_state s.state (s.commands f) ▸
+        (⟨(State.run_terrain ..).trans (s.seeded sd h).1,
+          (State.run_creatures ..).trans (s.seeded sd h).2⟩ :
+          (s.state.run (s.commands f)).world.FromSeed sd) }, log)
 
 /-- Advance through a sequence of frames, collecting every command that was run. -/
 def play (s : Session) : List Frame → Session × List Command

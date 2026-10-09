@@ -540,6 +540,43 @@ theorem shrinkPlayer_lt {p q : Player} (h : q ∈ shrinkPlayer p) : playerSize q
       simp [playerSize, ht]
     · cases h
 
+def entitySize (e : Entity) : Nat :=
+  vecSize e.pos + vecSize e.vel + e.onGround.toNat + e.walking.toNat + e.timer + e.heading.val
+
+theorem shrinkEntity_lt {e e' : Entity} (h : e' ∈ shrinkEntity e) :
+    entitySize e' < entitySize e := by
+  simp only [shrinkEntity, List.mem_append, List.mem_map] at h
+  rcases h with ((((⟨v, hv, rfl⟩ | ⟨v, hv, rfl⟩) | h) | h) | ⟨n, hn, rfl⟩) | h
+  · have := shrinkVec3_lt hv
+    simp only [entitySize]
+    omega
+  · have := shrinkVec3_lt hv
+    simp only [entitySize]
+    omega
+  · split at h
+    · next ht =>
+      simp only [List.mem_singleton] at h
+      subst h
+      simp [entitySize, ht]
+    · cases h
+  · split at h
+    · next ht =>
+      simp only [List.mem_singleton] at h
+      subst h
+      simp [entitySize, ht]
+    · cases h
+  · have := shrinkNat_lt hn
+    simp only [entitySize]
+    omega
+  · split at h
+    · cases h
+    · next hh =>
+      simp only [List.mem_singleton] at h
+      subst h
+      have : e.heading.val ≠ 0 := fun eq => hh (Fin.ext eq)
+      simp only [entitySize, Fin.val_zero]
+      omega
+
 def editSize (e : BlockPos × Block) : Nat :=
   e.1.x.natAbs + e.1.y.natAbs + e.1.z.natAbs + blockSize e.2
 
@@ -560,14 +597,30 @@ theorem shrinkEdit_lt {e e' : BlockPos × Block} (h : e' ∈ shrinkEdit e) :
     simp only [editSize]
     omega
 
+def columnSize (c : Int × Int) : Nat :=
+  c.1.natAbs + c.2.natAbs
+
+theorem shrinkColumn_lt {c c' : Int × Int} (h : c' ∈ shrinkPair shrinkInt shrinkInt c) :
+    columnSize c' < columnSize c := by
+  simp only [shrinkPair, List.mem_append, List.mem_map] at h
+  rcases h with ⟨x, hx, rfl⟩ | ⟨z, hz, rfl⟩
+  · have := shrinkInt_natAbs_lt hx
+    simp only [columnSize]
+    omega
+  · have := shrinkInt_natAbs_lt hz
+    simp only [columnSize]
+    omega
+
 def saveSize (d : SaveData) : Nat :=
   listSize editSize d.edits + inventorySize d.inventory + playerSize d.player + d.seed.toNat
-    + d.selected.val
+    + d.selected.val + listSize entitySize d.entities + d.rng.state.toNat
+    + listSize columnSize d.populated
 
 theorem shrinkSaveData_lt {d d' : SaveData} (h : d' ∈ shrinkSaveData d) :
     saveSize d' < saveSize d := by
   simp only [shrinkSaveData, List.mem_append, List.mem_map] at h
-  rcases h with (((⟨es, hes, rfl⟩ | ⟨inv, hinv, rfl⟩) | ⟨p, hp, rfl⟩) | ⟨n, hn, rfl⟩) | h
+  rcases h with ((((((⟨es, hes, rfl⟩ | ⟨inv, hinv, rfl⟩) | ⟨p, hp, rfl⟩) | ⟨n, hn, rfl⟩) | h)
+    | ⟨es, hes, rfl⟩) | ⟨n, hn, rfl⟩) | ⟨cs, hcs, rfl⟩
   · have := shrinkList_lt (fun _ _ => shrinkEdit_lt) hes
     simp only [saveSize]
     omega
@@ -592,6 +645,19 @@ theorem shrinkSaveData_lt {d d' : SaveData} (h : d' ∈ shrinkSaveData d) :
       have : d.selected.val ≠ 0 := fun e => hsel (Fin.ext e)
       simp only [saveSize, Fin.val_zero]
       omega
+  · have := shrinkList_lt (fun _ _ => shrinkEntity_lt) hes
+    simp only [saveSize]
+    omega
+  · have hlt := shrinkNat_lt hn
+    have hbound := d.rng.state.toNat_lt
+    have hn' : n.toUInt64.toNat = n := by
+      simp only [Nat.toUInt64, UInt64.toNat_ofNat']
+      exact Nat.mod_eq_of_lt (by omega)
+    simp only [saveSize, hn']
+    omega
+  · have := shrinkList_lt (fun _ _ => shrinkColumn_lt) hcs
+    simp only [saveSize]
+    omega
 
 /-! ## Every shrinker the tests use
 

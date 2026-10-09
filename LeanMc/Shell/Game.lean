@@ -7,14 +7,15 @@ import LeanMc.Core.View
 import LeanMc.Core.Render
 import LeanMc.Core.Save
 import LeanMc.Shell.Atlas
+import LeanMc.Shell.Fox
 
 /-!
 # The game shell
 
 Everything that talks to the outside world: the frame loop, input, chunk
 streaming and drawing. It decides *when* to load, mesh, tick and draw, but
-*what* a chunk contains, *which* faces it shows and *how* the player moves all
-come from `LeanMc.Core`.
+*what* a chunk contains, *which* faces it shows and *how* the player and the
+fox move all come from `LeanMc.Core`.
 
 This module is unverified. Its floating point is confined to the view
 direction and to turning exact positions into small numbers for the renderer.
@@ -24,8 +25,8 @@ namespace LeanMc.Shell
 
 open FFI
 
-/-- How far chunks are kept loaded around the player. -/
-def view : ViewRange := ⟨6, 4⟩
+/-- How far chunks are drawn around the player: as far as the game has them loaded. -/
+def view : ViewRange := loadRange
 
 def blockName : Block → String
   | .air => "air" | .bedrock => "bedrock" | .stone => "stone" | .dirt => "dirt"
@@ -39,6 +40,8 @@ structure Game where
   renderer : Renderer := {}
   /-- Where the player was one tick ago, so that drawing can blend between ticks. -/
   prevPos : Vec3
+  /-- The creatures as they were one tick ago, for the same reason. -/
+  prevEntities : List Entity := []
   yaw : Float := 0.0
   pitch : Float := 0.0
   captured : Bool := false
@@ -71,15 +74,20 @@ def lookDir (g : Game) : Float × Float × Float :=
   (g.yaw.sin * g.pitch.cos, g.pitch.sin, -(g.yaw.cos * g.pitch.cos))
 
 /--
+A position between where something was a tick ago and where it is now, by how
+far into the current tick the frame falls.
+-/
+def blend (g : Game) (before now : Vec3) : Vec3 :=
+  let part : Int := (min g.session.debt unitsPerTick * 1024 / unitsPerTick : Nat)
+  let mix (a b : Int) : Int := a + (b - a) * part / 1024
+  ⟨mix before.x now.x, mix before.y now.y, mix before.z now.z⟩
+
+/--
 The eye position to draw from, in fixed-point units: the player's eyes, blended
-between the last two ticks by how far into the current tick the frame falls.
+between the last two ticks.
 -/
 def eye (g : Game) : Vec3 :=
-  let blend : Int := (min g.session.debt unitsPerTick * 1024 / unitsPerTick : Nat)
-  let mix (a b : Int) : Int := a + (b - a) * blend / 1024
-  ⟨mix g.prevPos.x g.player.pos.x,
-   mix g.prevPos.y g.player.pos.y + Player.eyeHeight,
-   mix g.prevPos.z g.player.pos.z⟩
+  (g.blend g.prevPos g.player.pos).add .y Player.eyeHeight
 
 /-- The view direction as a vector to the limit of the player's reach, in units. -/
 def lookVector (g : Game) : Vec3 :=
@@ -121,9 +129,13 @@ def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
     g.plan (g.renderer.applyEdit g.world p b)
   | none => return g
 
-/-- Mesh missing chunks around the player, nearest first, for up to `budgetMs`. -/
+/--
+Mesh missing chunks around the player, nearest first, for up to `budgetMs`. The
+chunks are the ones the game has loaded; this only decides how soon each is
+built.
+-/
 def stream (g : Game) (budgetMs : Nat) : IO Game := do
-  let centre := g.eye.blockPos.chunkPos
+  let centre := g.state.centre
   let start ← IO.monoMsNow
   let mut g := g
   for o in chunkOffsets do
@@ -165,11 +177,14 @@ def load (g : Game) (path : System.FilePath := savePath) : IO Game := do
     | none => return g.say s!"{path} does not describe a sound game"
     | some session =>
       let g ← g.plan g.renderer.reset
-      return { g with session, prevPos := session.state.player.pos }.say s!"loaded {path}"
+      return { g with
+        session
+        prevPos := session.state.player.pos
+        prevEntities := session.state.entities }.say s!"loaded {path}"
 
 /-- Drop meshes and cached chunks that are well out of view. -/
 def unloadFar (g : Game) : IO Game :=
-  g.plan (g.renderer.dropFar view g.eye.blockPos.chunkPos)
+  g.plan (g.renderer.dropFar view g.state.centre)
 
 /--
 Advance the simulation by one frame. The core decides how many ticks run, what
@@ -184,6 +199,7 @@ def advance (g : Game) (frame : Frame) : IO Game := do
   let g := { g with
     session
     prevPos := log.before.getD g.prevPos
+    prevEntities := log.entitiesBefore.getD g.prevEntities
     ticks := g.ticks + ran
     edits := g.edits + log.edits.size }
   g.plan followed
@@ -249,6 +265,24 @@ def readFrame (g : Game) : IO (Game × Frame) := do
     return ({ g with captured := true }, frame)
   return (g, frame)
 
+/--
+Draw the creatures in loaded chunks as seen from `eye`, each blended between
+the last two ticks like the eye itself. Every one is a fox, turned to face the
+way it is heading.
+-/
+def drawEntities (g : Game) (eye : Vec3) : IO Unit := do
+  for (e, i) in g.state.entities.zipIdx do
+    unless State.loaded g.state.centre e.chunk do
+      continue
+    let pos := g.blend ((g.prevEntities[i]?.getD e).pos) e.pos
+    let rel (a b : Int) : Float := Float.ofInt (a - b) / 65536.0
+    -- The model faces north; a heading is that many eighths of a turn clockwise seen from above.
+    let turn := -45.0 * e.heading.val.toFloat
+    for p in Fox.parts do
+      drawBox (rel pos.x eye.x) (rel pos.y eye.y) (rel pos.z eye.z) turn
+        (p.x * Fox.scale) (p.y * Fox.scale) (p.z * Fox.scale)
+        (p.sx * Fox.scale) (p.sy * Fox.scale) (p.sz * Fox.scale) p.rgba
+
 def draw (g : Game) : IO Unit := do
   let eye := g.eye
   beginFrame 0x87b5ffff
@@ -258,6 +292,7 @@ def draw (g : Game) : IO Unit := do
   let draws := g.renderer.drawCmds eye
   draws.forM send
   let drawn := draws.length - 1
+  g.drawEntities eye
   if let some hit := g.state.target g.lookVector then
     let b := hit.block
     let rel (block eye : Int) : Float := Float.ofInt (block * 65536 - eye) / 65536.0 - 0.003
@@ -410,7 +445,11 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
       {p.pos.blockPos.z}, onGround {p.onGround}, flying {p.flying}, {g.edits} blocks dug or \
       placed, carrying {(List.finRange 9).filterMap fun i =>
         (g.state.inventory.stack i).map fun s => s!"{s.count} {blockName s.block}"}, \
-      {g.ticks} ticks, inside something solid: {Player.blocked g.world.solid p.pos}"
+      {g.ticks} ticks, inside something solid: {Player.blocked g.world.solid p.pos}, \
+      {g.state.entities.length} foxes made in {g.state.populated.size} columns, \
+      {g.state.entities.countP fun e => State.loaded g.state.centre e.chunk} of them loaded, \
+      inside something solid: \
+      {g.state.entities.any fun e => Entity.shape.blocked g.world.solid e.pos}"
   match opts.selftest, opts.flytest with
   | some path, _ => if g.frame == 230 then return ← finish path
   | _, some path => if g.frame == flytestFrames then return ← finish path
@@ -500,8 +539,9 @@ def saveTest (g : Game) (path : String) : IO UInt32 := do
   g ← play g ((List.range 30).map (· + 110))
   ok := (← report "playing on changes the game" (g.world.edits.size != saved.world.edits.size)) && ok
   g ← g.load path
-  ok := (← report "loading restores the player, the inventory and the selected slot" <|
-    g.player == saved.player && g.state.inventory == saved.state.inventory
+  ok := (← report "loading restores the player, the fox, the inventory and the selected slot" <|
+    g.player == saved.player && g.state.entities == saved.state.entities
+      && g.state.rng == saved.state.rng && g.state.inventory == saved.state.inventory
       && g.state.selected == saved.state.selected) && ok
   let near := cells.flatMap fun p => p :: Dir.all.map p.step
   ok := (← report "loading restores every edited block and leaves its neighbours as they were" <|
@@ -534,16 +574,16 @@ def saveTest (g : Game) (path : String) : IO UInt32 := do
   return if ok then 0 else 1
 
 /--
-A standing position near the middle of block `b`: raised until it is clear of
-anything solid, then lowered onto the ground.
+A standing position for a body of shape `sh` near the middle of block `b`:
+raised until it is clear of anything solid, then lowered onto the ground.
 -/
-def standNear (world : World) (b : BlockPos) : Vec3 := Id.run do
+def standNear (sh : Shape) (world : World) (b : BlockPos) : Vec3 := Id.run do
   let mut pos : Vec3 := ⟨b.x * 65536 + 32768, b.y * 65536, b.z * 65536 + 32768⟩
   let mut tries := 0
-  while Player.blocked world.solid pos && tries < 256 do
+  while sh.blocked world.solid pos && tries < 256 do
     pos := pos.add .y 65536
     tries := tries + 1
-  return Player.settle world.solid 256 pos
+  return sh.settle world.solid 256 pos
 
 def run (args : List String) : IO UInt32 := do
   let opts ← match Options.parse {} args with
@@ -554,22 +594,23 @@ def run (args : List String) : IO UInt32 := do
         [--selftest PNG | --flytest PNG | --inputtest | --savetest FILE]"
       return 2
   -- A session can only be built with a proof that its state is sound: either the
-  -- generated world's own start, or a position the core has checked.
+  -- generated world's own start, or positions the core has checked.
   let started : Option Session :=
     if opts.flat then
-      let pos := standNear Terrain.flatWorld (opts.start.getD ⟨7, 12, 14⟩)
+      let pos := standNear Player.shape Terrain.flatWorld (opts.start.getD ⟨7, 12, 14⟩)
       Session.start? Terrain.flatWorld Terrain.flatWorld_floor
-        (Player.resting Terrain.flatWorld.solid pos)
+        (Player.resting Terrain.flatWorld.solid pos) (rng := .ofSeed opts.seed)
     else
       match opts.start with
       | none => some (Terrain.session opts.seed)
       | some b =>
         let world := Terrain.world opts.seed
+        let pos := standNear Player.shape world b
         Session.start? world (Terrain.world_floor_get opts.seed)
-          (Player.resting world.solid (standNear world b)) (seed := some opts.seed)
+          (Player.resting world.solid pos) (rng := .ofSeed opts.seed) (seed := some opts.seed)
           (seeded := fun sd h => by
             cases h
-            rfl)
+            exact ⟨rfl, rfl⟩)
   let some session := started
     | IO.eprintln "there is nowhere to stand at that position"
       return 1
@@ -577,7 +618,7 @@ def run (args : List String) : IO UInt32 := do
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
   let mut game : Game :=
-    { session, prevPos := pos, pitch := -0.35, yaw := 0.15 }
+    { session, prevPos := pos, prevEntities := session.state.entities, pitch := -0.35, yaw := 0.15 }
   if let some path := opts.load then
     game ← game.load path
     IO.println game.notice

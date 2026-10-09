@@ -66,6 +66,22 @@ def unsoundness (start : State) (cmds : List Command) : Option String := Id.run 
     if next.player.onGround
         != Player.blocked next.world.solid (next.player.pos.add .y (-1)) then
       return some s!"tick {tick}: the player is wrong about standing on something"
+    if next.entities.length < s.entities.length then
+      return some s!"tick {tick}: a fox vanished"
+    if (s.entities.zipIdx).any fun (e, i) =>
+        !State.loaded s.centre e.chunk && next.entities[i]? != some e then
+      return some s!"tick {tick}: a fox in an unloaded chunk changed"
+    if (State.loadedColumns next.centre).any fun c => !next.populated.contains c then
+      return some s!"tick {tick}: a loaded column has not been populated"
+    if next.entities.any fun e => Entity.shape.blocked next.world.solid e.pos then
+      return some s!"tick {tick}: a fox is inside a solid block"
+    if next.entities.any fun e => e.pos.y < 65536 then
+      return some s!"tick {tick}: a fox is below the floor"
+    if next.entities.any fun e => !decide e.SpeedBounded then
+      return some s!"tick {tick}: a fox is over the speed limit"
+    if next.entities.any fun e =>
+        e.onGround != Entity.shape.blocked next.world.solid (e.pos.add .y (-1)) then
+      return some s!"tick {tick}: a fox is wrong about standing on something"
     if let some (p, _) := edit then
       let eye := s.eye.blockPos
       if (p.x - eye.x).natAbs > 5 || (p.y - eye.y).natAbs > 5 || (p.z - eye.z).natAbs > 5 then
@@ -252,7 +268,14 @@ def main (args : List String) : IO UInt32 := do
   let kit := [(Block.planks, 40), (.cobble, 70), (.sand, 3)].foldl
     (fun inv (b, n) => (List.range n).foldl (fun inv _ => (inv.add b).getD inv) inv)
     ({} : Inventory)
-  let some flat := Session.start? Terrain.flatWorld Terrain.flatWorld_floor
+  -- A fox stands two blocks east of the player, where digging and placing can reach it,
+  -- and there is another in every eighth column of chunks, to be met and left behind.
+  let foxes (cx cz : Int) : List Entity :=
+    if cx % 8 == 0 && cz % 8 == 0 then
+      [Entity.resting Terrain.flatWorld.solid
+        ⟨cx * 1048576 + 425984, 589824, cz * 1048576 + 294912⟩]
+    else []
+  let some flat := Session.start? (Terrain.flatWorld foxes) Terrain.flatWorld_floor
       (Player.resting Terrain.flatWorld.solid ⟨294912, 589824, 294912⟩) kit
     | IO.println "FAIL  could not start in the flat world"
       return 1

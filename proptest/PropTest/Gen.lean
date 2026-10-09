@@ -192,15 +192,33 @@ def genEdit : G (BlockPos × Block) := do
 def genPlayer : G Player := do
   return { pos := ← genWideVec, vel := ← genWideVec, onGround := ← chance 50, flying := ← chance 50 }
 
+/-- The way a saved fox faces: any of the eight. -/
+def genHeading : G (Fin 8) := do
+  return ⟨(← chooseNat 0 7) % 8, Nat.mod_lt _ (by decide)⟩
+
+/-- A saved fox: anywhere, at any speed, with any claim about the ground and anything in mind. -/
+def genEntity : G Entity := do
+  return { pos := ← genWideVec, vel := ← genWideVec, onGround := ← chance 50
+           heading := ← genHeading, walking := ← chance 50, timer := ← chooseNat 0 400 }
+
+/-- A column of chunks said to have been populated: anywhere at all. -/
+def genColumn : G (Int × Int) := do
+  return (← genWideInt, ← genWideInt)
+
 /-- Any saved game at all, sound or not: the encoding has to cope with every one. -/
 def genSaveData : G SaveData := do
   let seed ← genSeed
   let edits ← listOfMaxLength 12 genEdit
+  let entities ← listOfMaxLength 3 genEntity
+  let populated ← listOfMaxLength 4 genColumn
   return {
     seed
+    rng := ⟨← genSeed⟩
     player := ← genPlayer
     inventory := ← genInventory
     selected := ← genSlot9
+    entities
+    populated
     edits }
 
 /-- A valid save's integers with one of them replaced by an integer of any size. -/

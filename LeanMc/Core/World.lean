@@ -1,5 +1,6 @@
 import Std.Data.HashMap
 import LeanMc.Proofs.Chunk
+import LeanMc.Core.Entity
 
 /-!
 # The world
@@ -7,6 +8,10 @@ import LeanMc.Proofs.Chunk
 The world is a terrain function with a finite overlay of edits. Reading a
 block consults the overlay first and falls back to the terrain, so the world
 is defined at every position and never needs to be "loaded".
+
+A world also says which creatures each column of chunks starts with. Like the
+terrain, that is a function, defined for every column; `LeanMc.State` keeps the
+creatures that have been made from it.
 
 Chunks are a derived view: `World.chunk` materialises one, and `ChunkCache`
 keeps materialised chunks around for fast repeated reads. The cache is an
@@ -22,23 +27,33 @@ structure World where
   terrainChunk : ChunkPos → Chunk
   /-- The chunk generator produces exactly the terrain. -/
   terrainChunk_get : ∀ c l, (terrainChunk c).get l = terrain (c.blockAt l)
+  /-- The creatures the column of chunks at `(x, z)` starts with. -/
+  creatures : Int → Int → List Entity := fun _ _ => []
   /-- Blocks that have been changed, by position. -/
   edits : Std.HashMap BlockPos Block := {}
 
 namespace World
 
 /-- A world nobody has changed yet, generating its chunks block by block. -/
-def new (terrain : BlockPos → Block) : World where
+def new (terrain : BlockPos → Block) (creatures : Int → Int → List Entity := fun _ _ => []) :
+    World where
   terrain
   terrainChunk c := Chunk.ofFn fun l => terrain (c.blockAt l)
   terrainChunk_get _ _ := Chunk.get_ofFn ..
+  creatures
 
 /-- A world nobody has changed yet, with a chunk generator proved to match its terrain. -/
 def newWithChunks (terrain : BlockPos → Block) (terrainChunk : ChunkPos → Chunk)
-    (h : ∀ c l, (terrainChunk c).get l = terrain (c.blockAt l)) : World where
+    (h : ∀ c l, (terrainChunk c).get l = terrain (c.blockAt l))
+    (creatures : Int → Int → List Entity := fun _ _ => []) : World where
   terrain
   terrainChunk
   terrainChunk_get := h
+  creatures
+
+/-- The same world, starting with other creatures. -/
+def withCreatures (w : World) (creatures : Int → Int → List Entity) : World :=
+  { w with creatures }
 
 def get (w : World) (p : BlockPos) : Block :=
   match w.edits[p]? with

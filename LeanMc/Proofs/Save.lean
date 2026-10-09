@@ -10,9 +10,9 @@ import LeanMc.Proofs.Generated
   exactly that game's encoding: no two files mean the same game.
 * **Save and load is the identity.** Any session that can be saved, which is
   any session of a generated world, loads again from its snapshot: the result
-  cannot be told apart from the original, with the same player, inventory and
-  selected slot and the same block at every position, and it remembers the
-  same seed.
+  cannot be told apart from the original, with the same player, inventory,
+  selected slot, creatures and random number generator and the same block at
+  every position, and it remembers the same seed.
 * **And it stays that way.** The loaded game and the original answer every
   later sequence of commands identically.
 * **Every game that can be reached can be saved and loaded.** That holds after
@@ -67,6 +67,33 @@ theorem decodeSlots?_encode (slots : List (Option Stack)) (rest : List Int) :
         List.nil_append, decodeSlots?, decodeSlot?_some, ih]
       rfl
 
+theorem decodeEntity?_encode (e : Entity) :
+    decodeEntity? e.pos.x e.pos.y e.pos.z e.vel.x e.vel.y e.vel.z (encodeBool e.onGround)
+      (e.heading.val : Int) (encodeBool e.walking) (e.timer : Int) = some e := by
+  have hh : (0 : Int) ≤ (e.heading.val : Nat) ∧ ((e.heading.val : Nat) : Int) < 8
+      ∧ (0 : Int) ≤ (e.timer : Nat) := by
+    have := e.heading.isLt
+    omega
+  simp only [decodeEntity?, hh, and_self, ↓reduceDIte, decodeBool?_encodeBool, Option.bind_some,
+    Option.map_some, Int.toNat_natCast]
+
+theorem decodeEntities?_encode (es : List Entity) (rest : List Int) :
+    decodeEntities? es.length (es.flatMap encodeEntity ++ rest) = some (es, rest) := by
+  induction es with
+  | nil => rfl
+  | cons e es ih =>
+    simp only [List.length_cons, List.flatMap_cons, encodeEntity, List.cons_append,
+      List.nil_append, decodeEntities?, decodeEntity?_encode, Option.bind_some, ih,
+      Option.map_some]
+
+theorem decodeColumns?_encode (columns : List (Int × Int)) (rest : List Int) :
+    decodeColumns? columns.length (columns.flatMap encodeColumn ++ rest) = some (columns, rest) := by
+  induction columns with
+  | nil => rfl
+  | cons c cs ih =>
+    simp only [List.length_cons, List.flatMap_cons, encodeColumn, List.cons_append,
+      List.nil_append, decodeColumns?, ih, Option.map_some]
+
 theorem decodeEdits?_encode (edits : List (BlockPos × Block)) :
     decodeEdits? edits.length (edits.flatMap encodeEdit) = some edits := by
   induction edits with
@@ -81,20 +108,32 @@ theorem decode?_encode (d : SaveData) : decode? d.encode = some d := by
   have hseed : ((d.seed.toNat : Nat) : Int) < 18446744073709551616 := by
     have := d.seed.toNat_lt
     omega
+  have hrng : ((d.rng.state.toNat : Nat) : Int) < 18446744073709551616 := by
+    have := d.rng.state.toNat_lt
+    omega
   have hsel : (0 : Int) ≤ (d.selected.val : Nat) ∧ ((d.selected.val : Nat) : Int) < 9 := by
     have := d.selected.isLt
     omega
   have hslots := decodeSlots?_encode d.inventory.slots.toList
-    ((d.edits.length : Int) :: d.edits.flatMap encodeEdit)
+    ((d.entities.length : Int) :: (d.entities.flatMap encodeEntity
+      ++ (d.populated.length : Int) :: (d.populated.flatMap encodeColumn
+      ++ (d.edits.length : Int) :: d.edits.flatMap encodeEdit)))
   rw [Vector.length_toList] at hslots
+  have hentities := decodeEntities?_encode d.entities
+    ((d.populated.length : Int) :: (d.populated.flatMap encodeColumn
+      ++ (d.edits.length : Int) :: d.edits.flatMap encodeEdit))
+  have hcolumns := decodeColumns?_encode d.populated
+    ((d.edits.length : Int) :: d.edits.flatMap encodeEdit)
   simp only [encode, List.cons_append, List.nil_append, decode?, Int.natCast_nonneg,
-    hseed, and_self, ↓reduceIte, hsel, ↓reduceDIte, decodeBool?_encodeBool, Option.bind_some,
-    hslots, Vector.length_toList, Int.toNat_natCast, decodeEdits?_encode, Option.map_some]
+    hseed, hrng, and_self, ↓reduceIte, hsel, ↓reduceDIte, decodeBool?_encodeBool,
+    Option.bind_some, hslots, Vector.length_toList, Int.toNat_natCast, hentities, hcolumns,
+    decodeEdits?_encode, Option.map_some]
   congr 1
   cases d with
-  | mk seed player inventory selected edits =>
+  | mk seed rng player inventory selected entities populated edits =>
     cases player
     cases inventory
+    cases rng
     simp [Vector.toList]
 
 /-! ### The other direction: decoding determines the integers -/
@@ -160,6 +199,74 @@ theorem encode_of_decodeSlots? {n : Nat} {l rest : List Int} {slots : List (Opti
     | [], h => simp [decodeSlots?] at h
     | [_], h => simp [decodeSlots?] at h
 
+theorem encodeEntity_of_decodeEntity? {px py pz vx vy vz ground heading walking timer : Int}
+    {e : Entity} (h : decodeEntity? px py pz vx vy vz ground heading walking timer = some e) :
+    encodeEntity e = [px, py, pz, vx, vy, vz, ground, heading, walking, timer] := by
+  unfold decodeEntity? at h
+  split at h
+  · next hh =>
+    cases hg : decodeBool? ground with
+    | none => simp [hg] at h
+    | some og =>
+      cases hw : decodeBool? walking with
+      | none => simp [hg, hw] at h
+      | some wk =>
+        simp only [hg, hw, Option.bind_some, Option.map_some, Option.some.injEq] at h
+        subst h
+        have hg' := encodeBool_of_decodeBool? hg
+        have hw' := encodeBool_of_decodeBool? hw
+        simp only [encodeEntity, hg', hw', List.cons.injEq, true_and, and_true]
+        omega
+  · cases h
+
+theorem encode_of_decodeEntities? {n : Nat} {l rest : List Int} {es : List Entity}
+    (h : decodeEntities? n l = some (es, rest)) :
+    l = es.flatMap encodeEntity ++ rest ∧ es.length = n := by
+  induction n generalizing l es with
+  | zero =>
+    simp only [decodeEntities?, Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact ⟨rfl, rfl⟩
+  | succ n ih =>
+    rcases l with _ | ⟨px, _ | ⟨py, _ | ⟨pz, _ | ⟨vx, _ | ⟨vy, _ | ⟨vz, _ | ⟨ground,
+      _ | ⟨heading, _ | ⟨walking, _ | ⟨timer, l'⟩⟩⟩⟩⟩⟩⟩⟩⟩⟩
+    all_goals try (simp [decodeEntities?] at h; done)
+    simp only [decodeEntities?] at h
+    cases he : decodeEntity? px py pz vx vy vz ground heading walking timer with
+    | none => simp [he] at h
+    | some e =>
+      cases hr : decodeEntities? n l' with
+      | none => simp [he, hr] at h
+      | some pair =>
+        obtain ⟨es', rest'⟩ := pair
+        simp only [he, hr, Option.bind_some, Option.map_some, Option.some.injEq,
+          Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨rfl, hlen⟩ := ih hr
+        have := encodeEntity_of_decodeEntity? he
+        simp [this, hlen]
+
+theorem encode_of_decodeColumns? {n : Nat} {l rest : List Int} {columns : List (Int × Int)}
+    (h : decodeColumns? n l = some (columns, rest)) :
+    l = columns.flatMap encodeColumn ++ rest ∧ columns.length = n := by
+  induction n generalizing l columns with
+  | zero =>
+    simp only [decodeColumns?, Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact ⟨rfl, rfl⟩
+  | succ n ih =>
+    rcases l with _ | ⟨x, _ | ⟨z, l'⟩⟩
+    all_goals try (simp [decodeColumns?] at h; done)
+    simp only [decodeColumns?] at h
+    cases hr : decodeColumns? n l' with
+    | none => simp [hr] at h
+    | some pair =>
+      obtain ⟨cs, rest'⟩ := pair
+      simp only [hr, Option.map_some, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      obtain ⟨rfl, hlen⟩ := ih hr
+      simp [encodeColumn, hlen]
+
 theorem encode_of_decodeEdits? {n : Nat} {l : List Int} {edits : List (BlockPos × Block)}
     (h : decodeEdits? n l = some edits) : l = edits.flatMap encodeEdit ∧ edits.length = n := by
   induction n generalizing l edits with
@@ -201,7 +308,7 @@ theorem encode_of_decode? {l : List Int} {d : SaveData} (h : decode? l = some d)
     d.encode = l := by
   unfold decode? at h
   split at h
-  · next m v seed px py pz vx vy vz ground flying selected rest =>
+  · next m v seed rng px py pz vx vy vz ground flying selected rest =>
     split at h
     · next hc =>
       split at h
@@ -215,32 +322,66 @@ theorem encode_of_decode? {l : List Int} {d : SaveData} (h : decode? l = some d)
             cases hsl : decodeSlots? 9 rest with
             | none => simp [hg, hf, hsl] at h
             | some pair =>
-              obtain ⟨slots, rest'⟩ := pair
+              obtain ⟨slots, rest1⟩ := pair
               simp only [hg, hf, hsl, Option.bind_some] at h
               split at h
               · next hl =>
                 split at h
-                · next count rest'' =>
+                · next creatures rest2 =>
                   split at h
-                  · next hcount =>
-                    cases he : decodeEdits? count.toNat rest'' with
-                    | none => simp [he] at h
-                    | some edits =>
-                      simp only [he, Option.map_some, Option.some.injEq] at h
-                      subst h
-                      obtain ⟨rfl, -⟩ := encode_of_decodeSlots? hsl
-                      obtain ⟨rfl, hlen⟩ := encode_of_decodeEdits? he
-                      have hg' := encodeBool_of_decodeBool? hg
-                      have hf' := encodeBool_of_decodeBool? hf
-                      obtain ⟨rfl, rfl, hs0, hs1⟩ := hc
-                      have hseed : ((seed.toNat.toUInt64.toNat : Nat) : Int) = seed := by
-                        have : seed.toNat < 18446744073709551616 := by omega
-                        simp [Nat.mod_eq_of_lt this]
-                        omega
-                      have hcount' : ((edits.length : Nat) : Int) = count := by omega
-                      simp only [encode, hg', hf', hseed, List.cons_append, List.nil_append,
-                        List.cons.injEq, true_and, hcount']
-                      exact ⟨by omega, by simp [Vector.toList]⟩
+                  · next hcreatures =>
+                    cases hen : decodeEntities? creatures.toNat rest2 with
+                    | none => simp [hen] at h
+                    | some pair =>
+                      obtain ⟨entities, rest3⟩ := pair
+                      simp only [hen, Option.bind_some] at h
+                      split at h
+                      · next columns rest4 =>
+                        split at h
+                        · next hcolumns =>
+                          cases hco : decodeColumns? columns.toNat rest4 with
+                          | none => simp [hco] at h
+                          | some pair =>
+                            obtain ⟨populated, rest5⟩ := pair
+                            simp only [hco, Option.bind_some] at h
+                            split at h
+                            · next count rest6 =>
+                              split at h
+                              · next hcount =>
+                                cases he : decodeEdits? count.toNat rest6 with
+                                | none => simp [he] at h
+                                | some edits =>
+                                  simp only [he, Option.map_some, Option.some.injEq] at h
+                                  subst h
+                                  obtain ⟨rfl, -⟩ := encode_of_decodeSlots? hsl
+                                  obtain ⟨rfl, hlenE⟩ := encode_of_decodeEntities? hen
+                                  obtain ⟨rfl, hlenC⟩ := encode_of_decodeColumns? hco
+                                  obtain ⟨rfl, hlen⟩ := encode_of_decodeEdits? he
+                                  have hg' := encodeBool_of_decodeBool? hg
+                                  have hf' := encodeBool_of_decodeBool? hf
+                                  obtain ⟨rfl, rfl, ⟨hs0, hs1⟩, hr0, hr1⟩ := hc
+                                  have hseed :
+                                      ((seed.toNat.toUInt64.toNat : Nat) : Int) = seed := by
+                                    have : seed.toNat < 18446744073709551616 := by omega
+                                    simp [Nat.mod_eq_of_lt this]
+                                    omega
+                                  have hrng : ((rng.toNat.toUInt64.toNat : Nat) : Int) = rng := by
+                                    have : rng.toNat < 18446744073709551616 := by omega
+                                    simp [Nat.mod_eq_of_lt this]
+                                    omega
+                                  have hcreatures' :
+                                      ((entities.length : Nat) : Int) = creatures := by omega
+                                  have hcolumns' :
+                                      ((populated.length : Nat) : Int) = columns := by omega
+                                  have hcount' : ((edits.length : Nat) : Int) = count := by omega
+                                  simp only [encode, hg', hf', hseed, hrng, List.cons_append,
+                                    List.nil_append, List.cons.injEq, true_and, hcreatures',
+                                    hcolumns', hcount']
+                                  exact ⟨by omega, by simp [Vector.toList]⟩
+                              · cases h
+                            · cases h
+                        · cases h
+                      · cases h
                   · cases h
                 · cases h
               · cases h
@@ -332,7 +473,8 @@ theorem restore?_snapshot (s : Session) {d : SaveData} (hd : s.snapshot = some d
   cases hseed : s.seed with
   | none => simp [Session.snapshot, hseed] at hd
   | some seed =>
-    have hterrain := s.seeded seed hseed
+    have hterrain := (s.seeded seed hseed).1
+    have hcreatures := (s.seeded seed hseed).2
     simp only [Session.snapshot, hseed, Option.map_some, Option.some.injEq] at hd
     subst hd
     have hget : ∀ p, ((Terrain.world seed).setMany s.state.world.edits.toList).get p
@@ -370,29 +512,40 @@ theorem restore?_snapshot (s : Session) {d : SaveData} (hd : s.snapshot = some d
           = Player.blocked ((Terrain.world seed).setMany s.state.world.edits.toList).solid
             (s.state.player.pos.add .y (-1))
         ∧ (∀ i : Fin 9, (s.state.inventory.slots[i].map (·.block)) ≠ some .air)
-        ∧ (∀ i : Fin 9, (s.state.inventory.slots[i].map (·.block)) ≠ some .bedrock) := by
+        ∧ (∀ i : Fin 9, (s.state.inventory.slots[i].map (·.block)) ≠ some .bedrock)
+        ∧ (∀ e ∈ s.state.entities,
+          e.Sound ((Terrain.world seed).setMany s.state.world.edits.toList).solid) := by
       refine ⟨?_, s.sound.above, s.sound.speed, ?_, hcarry _ s.sound.items,
-        hcarry _ s.sound.bedrock⟩
+        hcarry _ s.sound.bedrock, ?_⟩
       · rw [hsolid]
         exact Player.blocked_eq_false_iff.mpr s.sound.free
       · rw [hsolid]
         exact s.sound.grounded
-    have hres : ∃ s', restore? (⟨seed, s.state.player, s.state.inventory, s.state.selected,
+      · rw [hsolid]
+        exact s.sound.entities
+    have hres : ∃ s', restore? (⟨seed, s.state.rng, s.state.player, s.state.inventory,
+          s.state.selected, s.state.entities, s.state.populated.toList,
           s.state.world.edits.toList⟩ : SaveData) = some s'
         ∧ s'.state =
           { world := (Terrain.world seed).setMany s.state.world.edits.toList
             player := s.state.player, inventory := s.state.inventory
-            selected := s.state.selected }
+            selected := s.state.selected, entities := s.state.entities
+            populated := .ofList s.state.populated.toList, rng := s.state.rng }
         ∧ s'.seed = some seed := by
       unfold restore?
       split
-      · unfold Session.start?
+      · unfold Session.resume?
         split
         · exact ⟨_, rfl, rfl, rfl⟩
         · next hn => exact absurd hstart hn
       · next hn => exact absurd hfloor hn
     obtain ⟨s', hs', hstate, hsd⟩ := hres
-    exact ⟨s', hs', ⟨by rw [hstate], by rw [hstate], by rw [hstate],
+    exact ⟨s', hs', ⟨by rw [hstate], by rw [hstate], by rw [hstate], by rw [hstate],
+      by rw [hstate],
+      fun c => by
+        rw [hstate]
+        exact Std.HashSet.contains_ofList.trans Std.HashSet.contains_toList,
+      by rw [hstate, World.creatures_setMany, hcreatures]; rfl,
       fun p => by rw [hstate]; exact hget p⟩, hsd⟩
 
 /-- The same, through the integer encoding: what is written is what is read back. -/
@@ -405,7 +558,8 @@ theorem restore?_decode_encode (s : Session) {d : SaveData} (hd : s.snapshot = s
 /--
 **And it stays that way.** A loaded game and the game that was saved answer
 every later sequence of commands identically: after any of them the two still
-have the same player, inventory, selected slot and blocks.
+have the same player, inventory, selected slot, creatures, populated columns,
+random number generator and blocks.
 -/
 theorem restore?_snapshot_run (s : Session) {d : SaveData} (hd : s.snapshot = some d)
     (cmds : List Command) :

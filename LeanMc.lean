@@ -6,7 +6,10 @@ import LeanMc.Core.World
 import LeanMc.Core.Mesh
 import LeanMc.Core.Terrain
 import LeanMc.Core.Physics
+import LeanMc.Core.Body
 import LeanMc.Core.Player
+import LeanMc.Core.Rng
+import LeanMc.Core.Entity
 import LeanMc.Core.Ray
 import LeanMc.Core.Inventory
 import LeanMc.Core.Game
@@ -17,13 +20,16 @@ import LeanMc.Core.Render
 import LeanMc.Core.Save
 import LeanMc.Core.Generated
 import LeanMc.Shell.Atlas
+import LeanMc.Shell.Fox
 import LeanMc.Shell.Game
 import LeanMc.Proofs.Pos
 import LeanMc.Proofs.Chunk
 import LeanMc.Proofs.World
 import LeanMc.Proofs.Terrain
 import LeanMc.Proofs.Mesh
+import LeanMc.Proofs.Body
 import LeanMc.Proofs.Player
+import LeanMc.Proofs.Entity
 import LeanMc.Proofs.Ray
 import LeanMc.Proofs.RayGeometry
 import LeanMc.Proofs.Inventory

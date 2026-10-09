@@ -301,6 +301,43 @@ lean_obj_res lmc_draw_box_wires(double x, double y, double z, double sx, double 
     return LMC_UNIT;
 }
 
+/*
+ * Draw a solid box in 3D mode, as part of a creature. The box has minimum
+ * corner (x, y, z) and the given size in a frame that is turned by `turn`
+ * degrees about the vertical axis and then moved to (px, py, pz). Each face is
+ * shaded by the way it points, more gently than the faces of blocks are.
+ */
+lean_obj_res lmc_draw_box(double px, double py, double pz, double turn, double x, double y,
+                          double z, double sx, double sy, double sz, uint32_t rgba) {
+    /* The corners of each face, counter-clockwise seen from outside; bit 0 is x, 1 is y, 2 is z. */
+    static const int faces[6][4] = {
+        {1, 3, 7, 5}, {0, 4, 6, 2}, {2, 6, 7, 3}, {0, 1, 5, 4}, {4, 5, 7, 6}, {0, 2, 3, 1},
+    };
+    /* The two triangles of a face, and the brightness of each face. */
+    static const int order[6] = {0, 1, 2, 0, 2, 3};
+    static const int shades[6] = {225, 225, 255, 160, 205, 205};
+    Color c = lmc_color(rgba);
+    float lo[3] = {(float)x, (float)y, (float)z};
+    float hi[3] = {(float)(x + sx), (float)(y + sy), (float)(z + sz)};
+    rlPushMatrix();
+    rlTranslatef((float)px, (float)py, (float)pz);
+    rlRotatef((float)turn, 0.0f, 1.0f, 0.0f);
+    rlBegin(RL_TRIANGLES);
+    for (int f = 0; f < 6; f++) {
+        rlColor4ub((unsigned char)(c.r * shades[f] / 255), (unsigned char)(c.g * shades[f] / 255),
+                   (unsigned char)(c.b * shades[f] / 255), c.a);
+        rlNormal3f(g_normals[f][0], g_normals[f][1], g_normals[f][2]);
+        for (int i = 0; i < 6; i++) {
+            int corner = faces[f][order[i]];
+            rlVertex3f(corner & 1 ? hi[0] : lo[0], corner & 2 ? hi[1] : lo[1],
+                       corner & 4 ? hi[2] : lo[2]);
+        }
+    }
+    rlEnd();
+    rlPopMatrix();
+    return LMC_UNIT;
+}
+
 /* Replace the block atlas with a width*height RGBA8 image. */
 lean_obj_res lmc_set_atlas(uint32_t width, uint32_t height, b_lean_obj_arg rgba) {
     if (lean_sarray_size(rgba) < (size_t)width * height * 4) return LMC_UNIT;
