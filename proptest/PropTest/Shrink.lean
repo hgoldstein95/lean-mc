@@ -55,8 +55,7 @@ def shrinkSelect : Option (Fin 9) → List (Option (Fin 9))
   | some i => none :: (if i = 0 then [] else [some 0])
 
 def shrinkCommand (c : Command) : List Command :=
-  (if c.dig then [{ c with dig := false }] else [])
-    ++ (if c.place then [{ c with place := false }] else [])
+  (if c.action.isSome then [{ c with action := none }] else [])
     ++ (shrinkSelect c.select).map (fun select => { c with select })
     ++ (shrinkInput c.move).map (fun move => { c with move })
     ++ (shrinkVec3 c.look).map (fun look => { c with look })

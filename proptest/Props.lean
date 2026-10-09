@@ -56,9 +56,19 @@ def unsoundness (start : State) (cmds : List Command) : Option String := Id.run 
         return some s!"tick {tick}: the inventory changed without an edit"
     if (List.finRange 9).any fun i =>
         match next.inventory.stack i with
-        | some stack => stack.count < 1 || stack.count > 64 || stack.block == .air
+        | some stack =>
+          stack.count < 1 || stack.count > 64 || stack.block == .air || stack.block == .bedrock
         | none => false then
-      return some s!"tick {tick}: a stack is empty, too big or made of air"
+      return some s!"tick {tick}: a stack is empty, too big, or made of air or bedrock"
+    if !decide next.player.SpeedBounded then
+      return some s!"tick {tick}: the player is over the speed limit"
+    if next.player.onGround
+        != Player.blocked next.world.solid (next.player.pos.add .y (-1)) then
+      return some s!"tick {tick}: the player is wrong about standing on something"
+    if let some (p, _) := edit then
+      let eye := s.eye.blockPos
+      if (p.x - eye.x).natAbs > 5 || (p.y - eye.y).natAbs > 5 || (p.z - eye.z).natAbs > 5 then
+        return some s!"tick {tick}: a block out of reach was changed"
     s := next
     tick := tick + 1
   return none
@@ -71,6 +81,7 @@ def pacingFault (start : Session) (frames : List Frame) : Option String :=
   let places := cmds.countP (·.place)
   let flips := frames.countP (·.fly)
   if final.debt ≥ unitsPerTick then some "a whole tick of time is still owed"
+  else if cmds.any (fun c => c.dig && c.place) then some "a command both digs and places"
   else if digs + final.pending.dig.toNat > pressed (·.dig) then
     some s!"{digs} digs ran for {pressed (·.dig)} presses"
   else if (pressed (·.dig) > 0) != (digs > 0 || final.pending.dig) then
@@ -155,20 +166,35 @@ structure RenderRun where
   gpu : Gpu := {}
   /-- The eye of the most recent draw, if the scene is still current. -/
   drawn : Option Vec3 := none
+  /-- Every command the planner has sent, oldest first. -/
+  sent : Array GpuCmd := #[]
 
 def RenderRun.step (run : RenderRun) : RenderOp → RenderRun
   | .mesh c =>
     let (renderer, cmds) := run.renderer.remesh run.world c
-    { run with renderer, gpu := run.gpu.run cmds, drawn := none }
+    { run with renderer, gpu := run.gpu.run cmds, drawn := none, sent := run.sent ++ cmds }
   | .edit p b =>
     let world := run.world.set p b
     let (renderer, cmds) := run.renderer.applyEdit world p b
-    { world, renderer, gpu := run.gpu.run cmds, drawn := none }
+    { run with world, renderer, gpu := run.gpu.run cmds, drawn := none, sent := run.sent ++ cmds }
   | .dropFar centre =>
     let (renderer, cmds) := run.renderer.dropFar ⟨1, 1⟩ centre
-    { run with renderer, gpu := run.gpu.run cmds, drawn := none }
+    { run with renderer, gpu := run.gpu.run cmds, drawn := none, sent := run.sent ++ cmds }
   | .draw eye =>
-    { run with gpu := run.gpu.run (run.renderer.drawCmds eye), drawn := some eye }
+    let cmds := run.renderer.drawCmds eye
+    { run with gpu := run.gpu.run cmds, drawn := some eye, sent := run.sent ++ cmds }
+
+/-- Every command the planner sends over a run of operations. -/
+def sentCommands (ops : List RenderOp) : List GpuCmd :=
+  (ops.foldl RenderRun.step { world := Terrain.flatWorld }).sent.toList
+
+/-- Whether some slot is emptied and later filled again. -/
+def reusesSlot (cmds : List GpuCmd) : Bool :=
+  (cmds.foldl (init := (([] : List Nat), false)) fun (emptied, reused) cmd =>
+    match cmd with
+    | .unload slot => (slot :: emptied, reused)
+    | .upload slot _ => (emptied, reused || emptied.contains slot)
+    | _ => (emptied, reused)).2
 
 /-- The first way the planner and the model shim disagree with the world, if any. -/
 def renderFault (ops : List RenderOp) : Option String :=
@@ -209,7 +235,7 @@ def main (args : List String) : IO UInt32 := do
     (fun inv (b, n) => (List.range n).foldl (fun inv _ => (inv.add b).getD inv) inv)
     ({} : Inventory)
   let some flat := Session.start? Terrain.flatWorld Terrain.flatWorld_floor
-      { pos := ⟨294912, 589824, 294912⟩ } kit
+      (Player.resting Terrain.flatWorld.solid ⟨294912, 589824, 294912⟩) kit
     | IO.println "FAIL  could not start in the flat world"
       return 1
   let flatSolid := Terrain.flatWorld.solid
@@ -287,6 +313,34 @@ def main (args : List String) : IO UInt32 := do
     (listOfMaxLength 150 genCommand) (shrinkList shrinkCommand) List.length 1 showCommands
     (fun cmds => pure <|
       if (flat.state.run cmds).world.edits.size > 0 then some "the world changed" else none)) && ok
+
+  ok := (← refutes "self-check: the planner empties a slot" runs
+    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 3
+    (fun ops => s!"{repr ops}")
+    (fun ops => pure <|
+      if (sentCommands ops).any (fun | .unload _ => true | _ => false) then some "a slot was emptied"
+      else none)) && ok
+
+  ok := (← refutes "self-check: the planner reuses an emptied slot" (runs * 2)
+    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 5
+    (fun ops => s!"{repr ops}")
+    (fun ops => pure <|
+      if reusesSlot (sentCommands ops) then some "an emptied slot was filled again" else none)) && ok
+
+  ok := (← refutes "self-check: an edit touches the chunk above or below" runs
+    (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 1
+    (fun ops => s!"{repr ops}")
+    (fun ops => pure <|
+      if ops.any (fun | .edit p _ => (dirtyChunks p).any (·.y != p.chunkPos.y) | _ => false) then
+        some "a chunk above or below is dirty"
+      else none)) && ok
+
+  ok := (← refutes "self-check: a dig and a place can wait together, and the place waits a tick" (runs * 2)
+    (listOfMaxLength 120 genFrame) (shrinkList shrinkFrame) List.length 4 showFrames
+    (fun frames => pure <|
+      if (flat.play frames).1.pending.place && (flat.play frames).2.any (·.dig) then
+        some "a place is waiting behind a dig"
+      else none)) && ok
 
   ok := (← refutes "self-check: an edit at a chunk edge dirties more than one chunk" runs
     (listOfMaxLength 30 genRenderOp) (shrinkList shrinkRenderOp) List.length 1

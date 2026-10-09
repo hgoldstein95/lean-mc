@@ -75,17 +75,25 @@ def genSelect : G (Option (Fin 9)) := do
   let i ← chooseNat 0 8
   return if pressed then some ⟨i % 9, Nat.mod_lt _ (by decide)⟩ else none
 
+/-- What a command asks to do to the world: often nothing, otherwise dig or place. -/
+def genAction : G (Option Action) :=
+  frequency! [
+    (4, fun _ => pure none),
+    (3, fun _ => pure (some Action.dig)),
+    (3, fun _ => pure (some Action.place))
+  ] (by simp)
+
 def genCommand : G Command := do
   return {
     move := ← genInput
     look := ← genLook
-    dig := ← chance 35
-    place := ← chance 35
+    action := ← genAction
     select := ← genSelect }
 
 /--
 How long a frame took, in units of 1/60000 s. A tick is 1000. Most of the
-weight is on frames that run no tick at all, or straddle a tick boundary.
+weight is on frames that run no tick at all, or straddle a tick boundary; the
+rest reach every number of ticks up to the per-frame limit and beyond it.
 -/
 def genElapsed : G Nat :=
   frequency! [
@@ -93,7 +101,7 @@ def genElapsed : G Nat :=
     (5, fun _ => chooseNat 1 450),
     (3, fun _ => chooseNat 900 1100),
     (1, fun _ => pure 1000),
-    (2, fun _ => chooseNat 1001 6000),
+    (2, fun _ => chooseNat 1001 16999),
     (1, fun _ => chooseNat 14000 200000)
   ] (by simp)
 
@@ -107,10 +115,14 @@ def genFrame : G Frame := do
     fly := ← chance 8
     elapsed := ← genElapsed }
 
-/-- A ray near the flat world's surface and pillars: where it starts and how far it goes. -/
+/--
+A ray near the flat world's surface and pillars: where it starts and how far it
+goes. It starts on either side of the origin, so cells with negative
+coordinates are walked from as well as into.
+-/
 def genRay : G (Vec3 × Vec3) := do
   let origin : Vec3 :=
-    ⟨← chooseInt 0 1310720, ← chooseInt 557056 917504, ← chooseInt 0 1310720⟩
+    ⟨← chooseInt (-1310720) 1310720, ← chooseInt 557056 917504, ← chooseInt (-1310720) 1310720⟩
   return (origin, ← genLook)
 
 /-! ## Saved games -/
@@ -169,6 +181,26 @@ inductive RenderOp where
 def genChunk : G ChunkPos := do
   return ⟨← chooseInt (-1) 1, ← chooseInt (-1) 1, ← chooseInt (-1) 1⟩
 
+/--
+Where the view is centred when far chunks are dropped: often far enough from
+the chunks `genChunk` meshes that some are dropped, their slots emptied and
+later reused.
+-/
+def genCentre : G ChunkPos := do
+  return ⟨← chooseInt (-4) 4, ← chooseInt (-4) 4, ← chooseInt (-4) 4⟩
+
+/--
+The height of an edit: usually in the ground or just above it, sometimes on or
+across the boundary between one chunk and the chunk above or below, where the
+edit also touches that chunk's mesh.
+-/
+def genEditY : G Int :=
+  frequency! [
+    (6, fun _ => chooseInt 1 14),
+    (3, fun _ => elements [15, 16, 17, 31, 32]),
+    (1, fun _ => elements [-1, 0])
+  ] (by simp)
+
 def genRenderOp : G RenderOp :=
   frequency! [
     (5, fun _ => RenderOp.mesh <$> genChunk),
@@ -176,8 +208,8 @@ def genRenderOp : G RenderOp :=
       -- Often on a chunk boundary, where an edit touches two or three chunks.
       let edge ← chance 40
       let coord : G Int := if edge then elements [-17, -16, -1, 0, 15, 16, 31] else chooseInt (-20) 34
-      return .edit ⟨← coord, ← chooseInt 1 14, ← coord⟩ (← genBlock)),
-    (1, fun _ => RenderOp.dropFar <$> genChunk),
+      return .edit ⟨← coord, ← genEditY, ← coord⟩ (← genBlock)),
+    (2, fun _ => RenderOp.dropFar <$> genCentre),
     (2, fun _ => do
       return .draw ⟨← chooseInt (-2000000) 2000000, ← chooseInt 0 1000000,
         ← chooseInt (-2000000) 2000000⟩)
