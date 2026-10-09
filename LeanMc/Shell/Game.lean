@@ -424,6 +424,9 @@ partial def loop (g : Game) (opts : Options) : IO Unit := do
     g ← g'.advance frame
     if ← keyPressed Key.f5 then g ← g.save
     if ← keyPressed Key.f9 then g ← g.load
+  -- The meshing budget, in milliseconds per frame. While chunks are streaming in, a frame
+  -- takes about this long plus drawing: roughly 75 frames a second at 6. If frame rates
+  -- fall below about 60, lower it; terrain then fills in more slowly.
   g ← g.stream (if opts.selftest.isSome then 100000 else 6)
   if opts.selftest.isSome && g.frame == 2 then
     let mut ground := g.player.pos.blockPos
