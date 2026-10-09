@@ -2,7 +2,8 @@
 
 `lake build` in this directory checks proofs that every generator the
 property tests run is correct. This file says what is proved, what the proofs
-rest on, and what is proposed but not yet done: the shrinkers and the harness.
+rest on, what is proved of the shrinkers, and what is proposed but not yet
+done for the harness.
 
 ## What is proved
 
@@ -88,62 +89,50 @@ case is actually found.
 - **`holds` with `runs / 4` passes vacuously** as "ok (0 runs)" for small
   `--runs`, and `refutes` fails spuriously with probability `(1-p)^runs`.
 
-## Proposed: the shrinkers
+## The shrinkers
 
 basalt has laws for generators and none for shrinkers, so what a shrinker
-should satisfy is a choice. `PropTestProofs/Shrink.lean` works the two
-candidate laws through for the command shrinker, as something concrete to
-decide on.
+should satisfy is a choice. One law is proved, in `PropTestProofs/Shrink.lean`,
+and two more are discussed below it.
 
-**Decreasing** (recommended; proved for `shrinkNat`, `shrinkInt`,
-`shrinkElapsed`, `shrinkVec3`, `shrinkSelect`, `shrinkInput`,
-`shrinkCommand`). Every candidate is strictly smaller than its input under an
-explicit measure:
+**Decreasing** (proved, of every shrinker). Every candidate is strictly
+smaller than its input under an explicit measure, a natural number:
 
 ```lean
-theorem shrinkCommand_lt {c d : Command} (h : d ∈ shrinkCommand c) :
-    commandSize d < commandSize c
+def Decreasing (shrink : α → List α) (size : α → Nat) : Prop :=
+  ∀ x, ∀ y ∈ shrink x, size y < size x
 ```
 
-This is what makes `minimise` stop without a step cap. It holds of every
-shrinker here. The measures for the rest:
+The file gives a measure for each shrinker (`commandSize`, `frameSize`,
+`renderOpSize`, `meshSize`, `gpuCmdSize`, `inventorySize`, `saveSize`, and
+`listSize` for lists) and proves the law for each: `shrinkNat`, `shrinkInt`,
+`shrinkElapsed`, `shrinkVec3`, `shrinkSelect`, `shrinkBlock`, `shrinkInput`,
+`shrinkCommand`, `shrinkFrame`, `shrinkChunk`, `shrinkRenderOp`, `shrinkMesh`,
+`shrinkGpuCmd`, `shrinkInventory`, `shrinkPlayer`, `shrinkEdit`,
+`shrinkSaveData`, and the combinators `shrinkList` and `shrinkPair` for any
+decreasing shrinker of their elements. Its last section instantiates these at
+exactly the shrinkers `Props.lean` and `Native.lean` hand to `minimise`.
 
-```lean
-def blockSize (b : Block) : Nat := if b = .stone then 0 else 1
-def frameSize (f : Frame) : Nat :=
-  f.dig.toNat + f.fly.toNat + f.place.toNat + selectSize f.select + f.elapsed
-    + inputSize f.move + vecSize f.look
-def listSize (size : α → Nat) (xs : List α) : Nat := (xs.map (size · + 1)).sum
-def meshSize (v : ByteArray) : Nat := 2 * v.size + (if v.data.all (· == 0) then 0 else 1)
-def slotSize : Option Stack → Nat | none => 0 | some s => 1 + s.extra.val + blockSize s.block
-def inventorySize (inv : Inventory) : Nat := (inv.slots.toList.map slotSize).sum
-def renderOpSize : RenderOp → Nat
-  | .mesh c | .dropFar c => c.x.natAbs + c.y.natAbs + c.z.natAbs
-  | .edit p b => p.x.natAbs + p.y.toNat + p.z.natAbs + blockSize b
-  | .draw e => vecSize e
-def gpuCmdSize : GpuCmd → Nat
-  | .upload s v => s + meshSize v | .unload s => s | .beginScene => 0 | .draw s o => s + vecSize o
-def saveSize (d : SaveData) : Nat :=
-  listSize editSize d.edits + inventorySize d.inventory + playerSize d.player
-    + d.seed.toNat + d.selected.val
-```
+What it buys is `Decreasing.steps_le`: a chain of shrink steps from `x` is at
+most `size x` long. So shrinking stops by itself, and the 5000-step cap in
+`minimise` is a budget of time, never what stands between it and a loop.
 
-`meshSize` avoids counting non-zero bytes: a shorter mesh loses at least 2,
-and zeroing flips the flag. `shrinkList` is the one with real content, about
-60 lines: each cut is `take (i*k) ++ drop ((i+1)*k)` with `i*k < n` and
-`0 < k`, and `set` changes one summand.
-
-To make the law impossible to forget, bundle the measure with the shrinker:
+Nothing enforces that a new shrinker comes with its proof. Bundling the
+measure with the shrinker would:
 
 ```lean
 structure Shrinker (α : Type) where
   shrink : α → List α
   size : α → Nat
-  decreasing : ∀ x, ∀ y ∈ shrink x, size y < size x
+  decreasing : Decreasing shrink size
 ```
 
-**Closed** (not recommended as a requirement). Every candidate is still a
-value the generator could have produced. It holds of the command shrinker
+That means moving the measures and their proofs into the Mathlib-free
+`PropTest` library, which the test executables link; none of the proofs needs
+Mathlib.
+
+**Closed** (not asked for). Every candidate is still a value the generator
+could have produced. It holds of the command shrinker
 (`shrinkCommand_ok`, `shrinkCommand_support`), because every range it draws
 from contains zero. It is false of the frame shrinker
 (`shrinkElapsed_not_closed`: 900 shrinks to 899, in the gap the generator
