@@ -14,6 +14,7 @@ import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
 import LeanMc.Proofs.View
 import LeanMc.Proofs.Render
+import LeanMc.Proofs.Client
 import LeanMc.Proofs.Save
 import LeanMc.Core.Start
 import LeanMc.Proofs.Generated
@@ -314,6 +315,18 @@ open LeanMc
   Renderer.Synced.draw
   Renderer.Synced.scene_sound
   Renderer.Synced.scene_complete
+
+-- The game and its picture, through every step the shell can take
+#assert_standard_axioms
+  Session.edit?_world
+  Client.Synced.start
+  Client.Synced.apply
+  Client.Synced.run
+  Client.run_synced
+  Client.run_noFault
+  Client.Synced.scene_sound
+  Client.Synced.scene_complete
+  Client.slots_unloadFar_of_loaded
 
 -- Inventory
 #assert_standard_axioms

@@ -16,6 +16,10 @@ that, against the model, the planner never misuses the shim and that what it
 draws is exactly the world's mesh for each loaded chunk.
 
 The planner chooses mesh slots itself, so the shim has no allocation logic.
+
+The planner is told which world it is drawing each time it is asked for
+something. `LeanMc.Core.Client` holds it together with the game, so that it is
+always told the game's own world.
 -/
 
 namespace LeanMc

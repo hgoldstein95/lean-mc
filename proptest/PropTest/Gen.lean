@@ -1,6 +1,7 @@
 import Basalt.Combinators
 import LeanMc.Core.Start
 import LeanMc.Core.Render
+import LeanMc.Core.Client
 import LeanMc.Core.Save
 
 /-!
@@ -284,6 +285,13 @@ def genRenderOp : G RenderOp :=
 def genRenderOps : G (List RenderOp) :=
   listOfMaxLength 30 genRenderOp
 
+/--
+What a client is put through: renderer operations and frames of play, which
+the test takes in turn.
+-/
+def genClientRun : G (List RenderOp × List Frame) := do
+  return (← genRenderOps, ← genFrames)
+
 /-! ## Commands to the shim -/
 
 /-- A byte of a packed vertex: usually a small value like the real ones, sometimes anything. -/
@@ -324,6 +332,13 @@ def genGpuCmd : G GpuCmd :=
 /-- A run of at most 40 commands to the shim. -/
 def genGpuCmds : G (List GpuCmd) :=
   listOfMaxLength 40 genGpuCmd
+
+/--
+A scene about as long as the shim's draw log, which holds 8192 draws: how many
+draws of one mesh to make, and a run of commands to send after them.
+-/
+def genLongScene : G (Nat × List GpuCmd) := do
+  return (← chooseNat 8150 8250, ← genGpuCmds)
 
 /-- Bytes for the shim to read as vertices: any number of them up to 200, whole vertices or not. -/
 def genDecodeBytes : G ByteArray := do

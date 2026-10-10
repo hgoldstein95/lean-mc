@@ -198,6 +198,34 @@ theorem genGpuCmds.cost_bounded :
   walk fixpoint [genGpuCmd.cost_bounded.obs]
   all_goals omega
 
+/-- A long scene is 8150 to 8250 draws, then any run of commands the generator can produce. -/
+theorem genLongScene.sound_complete :
+    IsSoundAndComplete genLongScene fun p =>
+      (8150 ≤ p.1 ∧ p.1 ≤ 8250) ∧ p.2.length ≤ 40 ∧ ∀ cmd ∈ p.2, Spec.GpuCmdOK cmd := by
+  refine .intro ?sound ?complete
+  case sound =>
+    rw [IsSoundFor.iff_obs]
+    walk fixpoint [genGpuCmds.sound_complete.sound.obs]
+    all_goals simp_all
+  case complete =>
+    intro p hp
+    rw [genLongScene, SPMF.mem_support_iff_may]
+    walk [genGpuCmds.sound_complete.complete.obs]
+    exact ⟨p.1, hp.1, p.2, hp.2, rfl⟩
+
+theorem genLongScene.terminates : IsAlmostSurelyTerminating genLongScene := by
+  mass_fixpoint [genGpuCmds.terminates.obs] using SPMF.LfpIsOne.one
+  mass_arith
+
+theorem genLongScene.faithful : IsFaithful genLongScene := by
+  faithful_fixpoint [genLongScene.terminates, genGpuCmds.faithful]
+
+theorem genLongScene.cost_bounded :
+    IsCostBounded genLongScene fun p => 2 + (p.2.map gpuCmdCost).sum := by
+  rw [IsCostBounded.iff_obs]
+  walk fixpoint [genGpuCmds.cost_bounded.obs]
+  all_goals omega
+
 /-- The bytes handed to the shim's decoder are any byte array of at most 200 bytes. -/
 theorem genDecodeBytes.sound_complete :
     IsSoundAndComplete genDecodeBytes fun v => v.size ≤ 200 := by

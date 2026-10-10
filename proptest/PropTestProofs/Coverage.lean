@@ -130,6 +130,17 @@ theorem genGpuCmd_covers_misuse :
     genGpuCmd.sound_complete.complete _ (by decide),
     ⟨⟨0, 0, 0⟩, genGpuCmd.sound_complete.complete _ (by decide)⟩⟩
 
+/--
+**Scenes on both sides of the shim's log**: one draw short of filling it,
+exactly filling it, and one draw over.
+-/
+theorem genLongScene_covers_log :
+    ∀ n ∈ [8191, 8192, 8193], (n, []) ∈ SPMF.support genLongScene := by
+  intro n hn
+  refine genLongScene.sound_complete.complete _ ⟨?_, by simp⟩
+  revert n
+  decide
+
 /-! ## Saved games -/
 
 /-- **A save that does not load**: one with a hole in the bedrock floor. -/

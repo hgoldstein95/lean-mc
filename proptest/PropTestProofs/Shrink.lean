@@ -706,6 +706,18 @@ theorem shrinkMesh_decreasing : Decreasing shrinkMesh meshSize :=
 theorem shrinkGpuCmds_decreasing : Decreasing (shrinkList shrinkGpuCmd) (listSize gpuCmdSize) :=
   shrinkList_decreasing fun _ _ => shrinkGpuCmd_lt
 
+/-- What a client is put through: renderer operations and frames. -/
+theorem shrinkClientRun_decreasing :
+    Decreasing (shrinkPair (shrinkList shrinkRenderOp) (shrinkList shrinkFrame))
+      fun p => listSize renderOpSize p.1 + listSize frameSize p.2 :=
+  shrinkPair_decreasing shrinkRenderOps_decreasing shrinkFrames_decreasing
+
+/-- Long scenes for the shim: the number of draws, and the commands after them. -/
+theorem shrinkLongScene_decreasing :
+    Decreasing (shrinkPair shrinkNat (shrinkList shrinkGpuCmd))
+      fun p => p.1 + listSize gpuCmdSize p.2 :=
+  shrinkPair_decreasing (fun _ _ => shrinkNat_lt) shrinkGpuCmds_decreasing
+
 /-! ## Closed: a law not asked for
 
 A shrinker is closed if every candidate is still a value its generator could

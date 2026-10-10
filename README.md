@@ -54,6 +54,10 @@ The game is split into three parts:
 - `LeanMc/Shell` and `ffi/shim.c` are the unverified shell: the frame loop, and
   the window, GPU objects and raw input.
 
+The shell holds the game and the render planner as one value, a `Client`, which
+it cannot build or take apart. It can only take the steps the core defines and
+send the commands each step hands it.
+
 Some of the headline results, for any seed and any sequence of inputs:
 
 - **The game never goes wrong.** Neither the player nor any fox is ever inside
@@ -74,6 +78,10 @@ Some of the headline results, for any seed and any sequence of inputs:
 - **What is drawn is what is there.** A face is in a chunk's mesh exactly when
   its block is visible and the block beside it is not opaque, and no face is
   emitted twice.
+- **The picture follows the game.** After any run of the steps the shell can
+  take, every meshed chunk's slot holds exactly the mesh of that chunk in the
+  world as it now is, and no command sent misuses the shim. This is proved
+  against a model of the shim, which the tests compare with the real one.
 - **Blocks are conserved.** Digging and placing never duplicate a block or make
   one vanish, and a tick changes at most one block.
 - **Presses are not lost or repeated**, however frames and ticks line up.
@@ -92,3 +100,6 @@ cd proptest && lake exe cache get   # once; the property tests need Mathlib
 lake test                           # property tests, using basalt
 lake exe native                     # the real shim against its model (opens a window)
 ```
+
+`lake exe native` also draws single block faces and reads pixels back. These
+few checks are the only tests of what the shim puts on the screen.

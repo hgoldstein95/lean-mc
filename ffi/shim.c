@@ -132,9 +132,13 @@ static Mesh g_meshes[LMC_MAX_MESHES];
 static bool g_mesh_live[LMC_MAX_MESHES];
 static bool g_fault = false;
 
-/* The draws made since the scene began, for the tests to read back. */
+/*
+ * The draws made since the scene began, for the tests to read back. The log
+ * holds the first LMC_SCENE_LOG of them; the total counts them all.
+ */
 static double g_scene[LMC_SCENE_LOG][4];
 static size_t g_scene_count = 0;
+static uint32_t g_scene_total = 0;
 
 static const float g_normals[6][3] = {
     {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
@@ -198,6 +202,7 @@ lean_obj_res lmc_mesh_unload(uint32_t slot) {
 /* Start a scene with nothing drawn. */
 lean_obj_res lmc_scene_begin(void) {
     g_scene_count = 0;
+    g_scene_total = 0;
     return LMC_UNIT;
 }
 
@@ -214,6 +219,7 @@ lean_obj_res lmc_mesh_draw(uint32_t slot, double tx, double ty, double tz) {
         g_scene[g_scene_count][3] = tz;
         g_scene_count++;
     }
+    g_scene_total++;
     return LMC_UNIT;
 }
 
@@ -268,7 +274,19 @@ lean_obj_res lmc_debug_mesh_live(uint32_t slot) {
     return LMC_BOOL(slot < LMC_MAX_MESHES && g_mesh_live[slot]);
 }
 
-/* The draws since the scene began: four numbers each, slot then offset. */
+/* How many slots hold a mesh. */
+lean_obj_res lmc_debug_live_count(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < LMC_MAX_MESHES; i++) {
+        if (g_mesh_live[i]) n++;
+    }
+    return LMC_U32(n);
+}
+
+/* How many draws there have been since the scene began, logged or not. */
+lean_obj_res lmc_debug_scene_total(void) { return LMC_U32(g_scene_total); }
+
+/* The first LMC_SCENE_LOG draws since the scene began: four numbers each, slot then offset. */
 lean_obj_res lmc_debug_scene(void) {
     lean_object *arr = lmc_float_array(g_scene_count * 4);
     double *out = (double *)lean_sarray_cptr(arr);
@@ -280,6 +298,24 @@ lean_obj_res lmc_debug_scene(void) {
 
 lean_obj_res lmc_debug_fault(void) { return LMC_BOOL(g_fault); }
 
+/*
+ * The colour, as 0xRRGGBBAA, of the frame being drawn at the point (fx, fy),
+ * given as fractions of the screen's width and height from its top left.
+ */
+lean_obj_res lmc_debug_pixel(double fx, double fy) {
+    rlDrawRenderBatchActive(); /* flush batched drawing so it is in the readback */
+    Image img = LoadImageFromScreen();
+    int x = (int)(fx * img.width);
+    int y = (int)(fy * img.height);
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= img.width) x = img.width - 1;
+    if (y >= img.height) y = img.height - 1;
+    Color c = GetImageColor(img, x, y);
+    UnloadImage(img);
+    return LMC_U32(((uint32_t)c.r << 24) | ((uint32_t)c.g << 16) | ((uint32_t)c.b << 8) | c.a);
+}
+
 /* Empty every slot and clear the scene and the fault flag. */
 lean_obj_res lmc_debug_reset(void) {
     for (uint32_t i = 0; i < LMC_MAX_MESHES; i++) {
@@ -289,6 +325,7 @@ lean_obj_res lmc_debug_reset(void) {
         }
     }
     g_scene_count = 0;
+    g_scene_total = 0;
     g_fault = false;
     return LMC_UNIT;
 }

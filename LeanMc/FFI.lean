@@ -134,13 +134,31 @@ opaque debugMesh (slot : UInt32) : IO FloatArray
 @[extern "lmc_debug_mesh_live"]
 opaque debugMeshLive (slot : UInt32) : IO Bool
 
-/-- The draws since the scene began: four numbers each, slot then offset. -/
+/-- How many slots hold a mesh. -/
+@[extern "lmc_debug_live_count"]
+opaque debugLiveCount : IO UInt32
+
+/-- How many draws the shim's scene log holds; `LMC_SCENE_LOG` in the shim. -/
+def sceneLogSize : Nat := 8192
+
+/-- The first `sceneLogSize` draws since the scene began: four numbers each, slot then offset. -/
 @[extern "lmc_debug_scene"]
 opaque debugScene : IO FloatArray
+
+/-- How many draws there have been since the scene began, logged or not. -/
+@[extern "lmc_debug_scene_total"]
+opaque debugSceneTotal : IO UInt32
 
 /-- Whether any mesh command so far was a misuse. -/
 @[extern "lmc_debug_fault"]
 opaque debugFault : IO Bool
+
+/--
+The `0xRRGGBBAA` colour of the frame being drawn at the point `(fx, fy)`, given
+as fractions of the screen's width and height from its top left.
+-/
+@[extern "lmc_debug_pixel"]
+opaque debugPixel (fx fy : Float) : IO UInt32
 
 /-- Empty every slot and clear the scene and the fault flag. -/
 @[extern "lmc_debug_reset"]

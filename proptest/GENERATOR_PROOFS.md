@@ -7,7 +7,7 @@ done for the harness.
 
 ## What is proved
 
-For each of the 42 generators in `PropTest/Gen.lean`, in `PropTestProofs/`:
+For each of the 44 generators in `PropTest/Gen.lean`, in `PropTestProofs/`:
 
 | Law | Meaning | Name |
 |---|---|---|
@@ -23,8 +23,8 @@ proof is one `walk` over the generator's definition followed by arithmetic.
 |---|---|
 | `Basic.lean` | `chance`, `genSpeed`, `genInput`, `genLook`, `genBlock`, `genAnyBlock`, `genSelect`, `genSlot9`, `genHeading`, `genAction`, `genElapsed`, `genWideInt` |
 | `Game.lean` | `genCommand`, `genCommands`, `genSeededCommands`, `genFrame`, `genFrames`, `genRay` |
-| `Render.lean` | `genChunk`, `genCentre`, `genEditY`, `genEditCoord`, `genEditPos`, `genRenderOp`, `genRenderOps` |
-| `Gpu.lean` | `genByte`, `genBytes`, `genMesh`, `genSlot`, `genGpuCmd`, `genGpuCmds`, `genDecodeBytes` |
+| `Render.lean` | `genChunk`, `genCentre`, `genEditY`, `genEditCoord`, `genEditPos`, `genRenderOp`, `genRenderOps`, `genClientRun` |
+| `Gpu.lean` | `genByte`, `genBytes`, `genMesh`, `genSlot`, `genGpuCmd`, `genGpuCmds`, `genLongScene`, `genDecodeBytes` |
 | `Save.lean` | `genStackSlot`, `genInventory`, `genWideVec`, `genSeed`, `genEdit`, `genPlayer`, `genEntity`, `genColumn`, `genSaveData`, `genMutatedSave` |
 
 So that each theorem is about the term that runs, every generator a property
@@ -47,6 +47,8 @@ predicate that has the case.
   meshed chunk out of view.
 - `genSlot_covers`, `genGpuCmd_covers_misuse`: every kind of slot, and each
   misuse the shim's model calls a fault.
+- `genLongScene_covers_log`: a scene one draw short of filling the shim's draw
+  log, one that exactly fills it, and one a draw too long for it.
 - `genSaveData_covers_unloadable`, `_loadable`: a save that is refused and a
   save that loads.
 - `genSaveData_covers_fox`, `_unsound_fox`: a save with a fox that loads, and
@@ -113,7 +115,8 @@ The file gives a measure for each shrinker (`commandSize`, `frameSize`,
 `shrinkMesh`, `shrinkGpuCmd`, `shrinkInventory`, `shrinkPlayer`,
 `shrinkEntity`, `shrinkEdit`, `shrinkSaveData`, and the combinators `shrinkList` and `shrinkPair` for any
 decreasing shrinker of their elements. Its last section instantiates these at
-exactly the shrinkers `Props.lean` and `Native.lean` hand to `minimise`.
+exactly the shrinkers `Props.lean` and `Native.lean` hand to `minimise`,
+among them the pairs that shrink a client's run and a long scene.
 
 What it buys is `Decreasing.steps_le`: a chain of shrink steps from `x` is at
 most `size x` long. So shrinking stops by itself, and the 5000-step cap in

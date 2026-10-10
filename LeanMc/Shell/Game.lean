@@ -5,6 +5,7 @@ import LeanMc.Core.Generated
 import LeanMc.Core.Start
 import LeanMc.Core.View
 import LeanMc.Core.Render
+import LeanMc.Core.Client
 import LeanMc.Core.Save
 import LeanMc.Shell.Atlas
 import LeanMc.Shell.Fox
@@ -16,6 +17,11 @@ Everything that talks to the outside world: the frame loop, input, chunk
 streaming and drawing. It decides *when* to load, mesh, tick and draw, but
 *what* a chunk contains, *which* faces it shows and *how* the player and the
 fox move all come from `LeanMc.Core`.
+
+The game and the planner that draws it are held together as a `Client`, which
+the shell can change only by the steps the core gives it. So the shell cannot
+let the two fall out of step; `LeanMc.Proofs.Client` shows that those steps
+never do. What is left to the shell is to send every command a step hands it.
 
 This module is unverified. Its floating point is confined to the view
 direction and to turning exact positions into small numbers for the renderer.
@@ -34,10 +40,11 @@ def blockName : Block → String
   | .planks => "planks" | .cobble => "cobble"
 
 structure Game where
-  /-- The simulated game and the bookkeeping that paces it; all of it lives in the core. -/
-  session : Session
-  /-- The render planner's memory: cached chunks and which mesh slot each chunk holds. -/
-  renderer : Renderer := {}
+  /--
+  The simulated game with the bookkeeping that paces it, and the render planner's memory of
+  what it has meshed. All of it lives in the core, and only the core's steps change it.
+  -/
+  client : Client
   /-- Where the player was one tick ago, so that drawing can blend between ticks. -/
   prevPos : Vec3
   /-- The creatures as they were one tick ago, for the same reason. -/
@@ -65,6 +72,8 @@ def chunkOffsets : Array (Int × Int × Int) :=
 
 namespace Game
 
+def session (g : Game) : Session := g.client.session
+def renderer (g : Game) : Renderer := g.client.renderer
 def state (g : Game) : State := g.session.state
 def world (g : Game) : World := g.session.state.world
 def player (g : Game) : Player := g.session.state.player
@@ -112,10 +121,10 @@ def send : GpuCmd → IO Unit
     meshDraw (slotArg slot) (Float.ofInt offset.x / 65536.0) (Float.ofInt offset.y / 65536.0)
       (Float.ofInt offset.z / 65536.0)
 
-/-- Take a planning step: keep the planner's new memory and carry out its instructions. -/
-def plan (g : Game) (step : Renderer × List GpuCmd) : IO Game := do
+/-- Take a step of the client: carry out its instructions and keep the client it leaves. -/
+def plan (g : Game) (step : Client × List GpuCmd) : IO Game := do
   step.2.forM send
-  return { g with renderer := step.1 }
+  return { g with client := step.1 }
 
 /--
 Change one block directly, outside the simulation, to set up a test scene. The
@@ -123,10 +132,8 @@ core refuses a change that would leave the state unsound; such a change is
 skipped.
 -/
 def setBlock (g : Game) (p : BlockPos) (b : Block) : IO Game := do
-  match g.session.edit? p b with
-  | some session =>
-    let g := { g with session }
-    g.plan (g.renderer.applyEdit g.world p b)
+  match g.client.edit? p b with
+  | some step => g.plan step
   | none => return g
 
 /--
@@ -141,7 +148,7 @@ def stream (g : Game) (budgetMs : Nat) : IO Game := do
   for o in chunkOffsets do
     let c := ViewRange.offsetChunk centre o
     unless g.renderer.slots.contains c do
-      g ← g.plan (g.renderer.remesh g.world c)
+      g ← g.plan (g.client.mesh c)
       if (← IO.monoMsNow) - start ≥ budgetMs then
         break
   return g
@@ -176,15 +183,14 @@ def load (g : Game) (path : System.FilePath := savePath) : IO Game := do
     match data.restore? with
     | none => return g.say s!"{path} does not describe a sound game"
     | some session =>
-      let g ← g.plan g.renderer.reset
+      let g ← g.plan (g.client.restart session)
       return { g with
-        session
         prevPos := session.state.player.pos
         prevEntities := session.state.entities }.say s!"loaded {path}"
 
 /-- Drop meshes and cached chunks that are well out of view. -/
 def unloadFar (g : Game) : IO Game :=
-  g.plan (g.renderer.dropFar view g.state.centre)
+  g.plan g.client.unloadFar
 
 /--
 Advance the simulation by one frame. The core decides how many ticks run, what
@@ -192,17 +198,15 @@ each is told and what changes, and the planner decides what to rebuild.
 -/
 def advance (g : Game) (frame : Frame) : IO Game := do
   let ran := g.session.ticksDue frame
-  let (session, log) := g.session.frameLog frame
-  -- The planner follows the frame's block changes from the world the frame began in;
-  -- `Renderer.Synced.frame` shows that this leaves it in step with the world it ended in.
-  let followed := g.renderer.applyEdits g.world log.edits.toList
+  -- The planner follows the frame's block changes inside the step;
+  -- `Client.Synced.frame` shows that this leaves it in step with the world the frame ended in.
+  let (step, log) := g.client.frame frame
   let g := { g with
-    session
     prevPos := log.before.getD g.prevPos
     prevEntities := log.entitiesBefore.getD g.prevEntities
     ticks := g.ticks + ran
     edits := g.edits + log.edits.size }
-  g.plan followed
+  g.plan step
 
 /-- Turn the mouse into a view direction and handle capturing it. -/
 def look (g : Game) : IO Game := do
@@ -289,7 +293,7 @@ def draw (g : Game) : IO Unit := do
   let (dx, dy, dz) := g.lookDir
   begin3D 0 0 0 dx dy dz 70.0
   -- The planner's offsets are measured from the eye, so the camera sits at the origin.
-  let draws := g.renderer.drawCmds eye
+  let draws := g.client.draw eye
   draws.forM send
   let drawn := draws.length - 1
   g.drawEntities eye
@@ -507,6 +511,7 @@ def inputTest (g : Game) : IO UInt32 := do
   let before := g.edits
   g ← press g {}
   ok := (← report "no press, no edit" (g.edits == before && g.player.flying)) && ok
+  ok := (← report "the shim was never misused" !(← debugFault)) && ok
   return if ok then 0 else 1
 
 /--
@@ -573,6 +578,7 @@ def saveTest (g : Game) (path : String) : IO UInt32 := do
     let after ← g.load path
     ok := (← report "a file with a hole in the floor is refused" <|
       after.notice.endsWith "does not describe a sound game") && ok
+  ok := (← report "the shim was never misused" !(← debugFault)) && ok
   IO.FS.removeFile path
   return if ok then 0 else 1
 
@@ -621,7 +627,8 @@ def run (args : List String) : IO UInt32 := do
   initWindow 1280 720 "lean-mc"
   setAtlas Atlas.size.toUInt32 Atlas.size.toUInt32 Atlas.pixels
   let mut game : Game :=
-    { session, prevPos := pos, prevEntities := session.state.entities, pitch := -0.35, yaw := 0.15 }
+    { client := .start session, prevPos := pos, prevEntities := session.state.entities
+      pitch := -0.35, yaw := 0.15 }
   if let some path := opts.load then
     game ← game.load path
     IO.println game.notice

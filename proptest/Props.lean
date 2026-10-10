@@ -213,27 +213,77 @@ def reusesSlot (cmds : List GpuCmd) : Bool :=
     | .upload slot _ => (emptied, reused || emptied.contains slot)
     | _ => (emptied, reused)).2
 
-/-- The first way the planner and the model shim disagree with the world, if any. -/
-def renderFault (ops : List RenderOp) : Option String :=
-  let run := ops.foldl RenderRun.step { world := Terrain.flatWorld }
-  let slots := run.renderer.slots.toList
+/--
+The first way a planner and a model shim disagree with a world, if any. `drawn`
+is the eye of the most recent draw, if the scene is still current.
+-/
+def syncFault (renderer : Renderer) (world : World) (gpu : Gpu) (drawn : Option Vec3) :
+    Option String :=
+  let slots := renderer.slots.toList
   let used := (slots.map (·.2)).filter (· != 0)
-  if run.gpu.fault then some "the planner misused the shim"
+  if gpu.fault then some "the planner misused the shim"
   else if used.eraseDups.length != used.length then some "two chunks share a slot"
   else if let some (c, _) := slots.find? fun (c, slot) =>
-      let mesh := meshChunk run.world.get c
-      if slot = 0 then mesh.size != 0 else run.gpu.meshes[slot]? != some mesh then
+      let mesh := meshChunk world.get c
+      if slot = 0 then mesh.size != 0 else gpu.meshes[slot]? != some mesh then
     some s!"chunk {repr c} does not hold the world's mesh"
   else
-    match run.drawn with
+    match drawn with
     | none => none
     | some eye =>
       let expected := slots.filterMap fun (c, slot) =>
         if slot = 0 then none else some (slot, Renderer.chunkOffset c eye)
-      if run.gpu.scene.length != expected.length
-          || !expected.all (run.gpu.scene.contains ·) then
+      if gpu.scene.length != expected.length
+          || !expected.all (gpu.scene.contains ·) then
         some "the scene is not one draw per meshed chunk"
       else none
+
+/-- The first way the planner and the model shim disagree with the world, if any. -/
+def renderFault (ops : List RenderOp) : Option String :=
+  let run := ops.foldl RenderRun.step { world := Terrain.flatWorld }
+  syncFault run.renderer run.world run.gpu run.drawn
+
+/--
+What a renderer operation asks of a client. A client has no way to drop a
+chunk's mesh at will: meshes go when a game is loaded, so where the renderer
+test drops far chunks, the client loads the game as it began.
+-/
+def clientOp (start : Session) : RenderOp → Client.Op
+  | .mesh c => .mesh c
+  | .edit p b => .edit p b
+  | .dropFar _ => .restart start
+  | .draw eye => .draw eye
+
+/--
+The steps a client takes for a run: the renderer operations and the frames in
+turn, with far chunks unloaded after each frame, as the shell may do.
+-/
+def clientOps (start : Session) : List RenderOp → List Frame → List Client.Op
+  | op :: ops, f :: fs => clientOp start op :: .frame f :: .unloadFar :: clientOps start ops fs
+  | ops, [] => ops.map (clientOp start)
+  | [], fs => fs.flatMap fun f => [.frame f, .unloadFar]
+
+/--
+What `Client.run_synced` says, checked on the compiled code: after any steps,
+the planner and the model shim agree with the world the session ended in.
+-/
+def clientFault (start : Session) (run : List RenderOp × List Frame) : Option String :=
+  let ops := clientOps start run.1 run.2
+  let (client, cmds) := (Client.start start).run ops
+  let drawn := match ops.getLast? with
+    | some (.draw eye) => some eye
+    | _ => none
+  syncFault client.renderer client.world (({} : Gpu).run cmds) drawn
+
+/-- Whether some step of the kind `which` picks out has the client send a command `sent` picks out. -/
+def clientSends (start : Session) (which : Client.Op → Bool) (sent : GpuCmd → Bool)
+    (run : List RenderOp × List Frame) : Bool :=
+  ((clientOps start run.1 run.2).foldl (init := (Client.start start, false)) fun (client, found) op =>
+    let step := client.apply op
+    (step.1, found || (which op && step.2.any sent))).2
+
+def showClientRun (run : List RenderOp × List Frame) : String :=
+  s!"{run.1.length} operations: {repr run.1}, with {showFrames run.2}"
 
 /--
 The first generator whose draw falls outside its predicate in `PropTest.Spec`,
@@ -312,6 +362,10 @@ def main (args : List String) : IO UInt32 := do
     (fun ops => s!"{ops.length} operations: {repr ops}")
     (fun ops => pure (renderFault ops))) && ok
 
+  ok := (← holds "a client keeps the model shim showing the session's world" (runs / 2)
+    genClientRun (shrinkPair (shrinkList shrinkRenderOp) (shrinkList shrinkFrame)) showClientRun
+    (fun run => pure (clientFault flat run))) && ok
+
   ok := (← holds "any saved game survives being written as text and read back" (runs * 3)
     genSaveData shrinkSaveData (fun d => s!"{repr d}")
     (fun d => pure <|
@@ -369,6 +423,24 @@ def main (args : List String) : IO UInt32 := do
     (fun ops => s!"{repr ops}")
     (fun ops => pure <|
       if reusesSlot (sentCommands ops) then some "an emptied slot was filled again" else none)) && ok
+
+  ok := (← refutes "self-check: a frame of play changes a chunk a client has meshed" runs
+    genClientRun (shrinkPair (shrinkList shrinkRenderOp) (shrinkList shrinkFrame))
+    (fun run => run.1.length + run.2.length) 3 showClientRun
+    (fun run => pure <|
+      if clientSends flat (fun | .frame _ => true | _ => false) (fun | .upload .. => true | _ => false)
+          run then
+        some "a frame had a mesh rebuilt"
+      else none)) && ok
+
+  ok := (← refutes "self-check: loading a game empties a client's slots" runs
+    genClientRun (shrinkPair (shrinkList shrinkRenderOp) (shrinkList shrinkFrame))
+    (fun run => run.1.length + run.2.length) 2 showClientRun
+    (fun run => pure <|
+      if clientSends flat (fun | .restart _ => true | _ => false) (fun | .unload _ => true | _ => false)
+          run then
+        some "a load emptied a slot"
+      else none)) && ok
 
   ok := (← refutes "self-check: an edit touches the chunk above or below" runs
     genRenderOps (shrinkList shrinkRenderOp) List.length 1

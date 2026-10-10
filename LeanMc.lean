@@ -17,6 +17,7 @@ import LeanMc.Core.Session
 import LeanMc.Core.Start
 import LeanMc.Core.View
 import LeanMc.Core.Render
+import LeanMc.Core.Client
 import LeanMc.Core.Save
 import LeanMc.Core.Generated
 import LeanMc.Shell.Atlas
@@ -37,6 +38,7 @@ import LeanMc.Proofs.Game
 import LeanMc.Proofs.Session
 import LeanMc.Proofs.View
 import LeanMc.Proofs.Render
+import LeanMc.Proofs.Client
 import LeanMc.Proofs.Save
 import LeanMc.Proofs.Generated
 import LeanMc.Proofs.Audit

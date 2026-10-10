@@ -1,4 +1,5 @@
 import PropTestProofs.Basic
+import PropTestProofs.Game
 
 /-!
 # The generators of renderer operations are correct
@@ -208,6 +209,37 @@ theorem genRenderOps.cost_bounded : IsCostBounded genRenderOps fun ops => 1 + 8 
   rw [IsCostBounded.iff_obs]
   walk fixpoint [genRenderOp.cost_bounded.obs]
   all_goals simp at *
+  all_goals omega
+
+/-! ## What a client is put through -/
+
+/-- A client's run is any run of renderer operations with any run of frames. -/
+theorem genClientRun.sound_complete :
+    IsSoundAndComplete genClientRun fun p =>
+      (p.1.length ≤ 30 ∧ ∀ op ∈ p.1, Spec.RenderOpOK op)
+        ∧ p.2.length ≤ 120 ∧ ∀ f ∈ p.2, Spec.FrameOK f := by
+  refine .intro ?sound ?complete
+  case sound =>
+    rw [IsSoundFor.iff_obs]
+    walk fixpoint [genRenderOps.sound_complete.sound.obs, genFrames.sound_complete.sound.obs]
+    all_goals simp_all
+  case complete =>
+    intro p hp
+    rw [genClientRun, SPMF.mem_support_iff_may]
+    walk [genRenderOps.sound_complete.complete.obs, genFrames.sound_complete.complete.obs]
+    exact ⟨p.1, hp.1, p.2, hp.2, rfl⟩
+
+theorem genClientRun.terminates : IsAlmostSurelyTerminating genClientRun := by
+  mass_fixpoint [genRenderOps.terminates.obs, genFrames.terminates.obs] using SPMF.LfpIsOne.one
+  mass_arith
+
+theorem genClientRun.faithful : IsFaithful genClientRun := by
+  faithful_fixpoint [genClientRun.terminates, genRenderOps.faithful, genFrames.faithful]
+
+theorem genClientRun.cost_bounded :
+    IsCostBounded genClientRun fun p => 2 + 8 * p.1.length + 18 * p.2.length := by
+  rw [IsCostBounded.iff_obs]
+  walk fixpoint [genRenderOps.cost_bounded.obs, genFrames.cost_bounded.obs]
   all_goals omega
 
 end PropTest
